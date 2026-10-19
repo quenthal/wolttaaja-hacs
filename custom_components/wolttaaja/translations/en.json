@@ -1,0 +1,45 @@
+{
+  "title": "Wolttaaja",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Wolt",
+        "description": "Copy credentials from your signed-in Wolt browser. Treat tokens like passwords.",
+        "data": {
+          "refresh_token": "Refresh token",
+          "bearer_token": "Access token (optional)",
+          "session_id": "Session ID (optional)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reconnect to Wolt",
+        "data": {
+          "refresh_token": "Refresh token",
+          "bearer_token": "Access token (optional)",
+          "session_id": "Session ID (optional)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Wolt rejected these credentials.",
+      "cannot_connect": "Unable to validate with Wolt. Wait before retrying."
+    },
+    "abort": {
+      "single_instance_allowed": "Only one Wolttaaja account is supported.",
+      "reauth_successful": "Authentication updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Polling and notifications",
+        "data": {
+          "idle_interval": "Idle polling interval (seconds)",
+          "active_interval": "Active polling interval (seconds)",
+          "eta_lead": "ETA notification lead (minutes)",
+          "grouping_window": "Notification grouping window (minutes)"
+        }
+      }
+    }
+  }
+}
