@@ -19,7 +19,7 @@ from .api import (
     is_active_order,
 )
 from .const import DEFAULTS, DOMAIN, EVENT
-from .models import choose, groups, project
+from .models import choose, groups, normalize_order_status, project
 
 _LOGGER = logging.getLogger(__name__)
 RETENTION = 30 * 86400
@@ -92,9 +92,10 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
                         "REFUNDED",
                     }:
                         raise WoltInvalidPayloadError("Unknown order lifecycle")
-                if not is_active_order(summary):
+                terminal = normalize_order_status(summary) in {"delivered", "cancelled", "failed"}
+                if not is_active_order(summary) or terminal:
                     # Missing lifecycle data is not evidence of an idle account.
-                    if not any(k in summary for k in ("telemetry", "order_status_type", "status")):
+                    if not terminal:
                         raise WoltInvalidPayloadError("Missing order lifecycle")
                     continue
                 oid = summary.get("purchase_id") or summary.get("order_id") or summary.get("id")

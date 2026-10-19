@@ -164,7 +164,9 @@ def project(order_id, summary, details):
             merged[key] = summary[key]
     return Order(
         order_id,
-        venue_name(summary) or venue_name(details),
+        venue_name(summary)
+        or venue_name(details)
+        or venue_name({"venue": {"name": details.get("venue_name")}}),
         normalize_order_status(merged),
         extract_order_eta(driver) or extract_order_eta(details) or extract_order_eta(summary),
     )

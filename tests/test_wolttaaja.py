@@ -309,3 +309,17 @@ def test_grouping_is_not_transitive():
         for i, m in enumerate([4, 7, 10])
     }
     assert [[o.order_id for o in batch] for batch in groups(orders, {}, now, 5, 3)] == [["0", "1"]]
+
+
+def test_restaurant_from_detail_payload():
+    assert project("a", {}, {"venue_name": "Known venue"}).restaurant == "Known venue"
+
+
+async def test_completed_legacy_order_with_stale_tracking_link(hass):
+    api = api_for()
+    api.fetch_orders.return_value = [
+        {"purchase_id": "a", "status": "completed", "call_to_action": {"type": "ORDER_TRACKING"}}
+    ]
+    c = await coordinator(hass, api)
+    assert await c._async_update_data() == {}
+    api.fetch_order_details.assert_not_awaited()
