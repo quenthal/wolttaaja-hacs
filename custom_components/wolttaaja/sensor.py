@@ -24,10 +24,8 @@ class WolttaajaSensor(WolttaajaEntity, SensorEntity):
 
     @property
     def selected(self):
-        if self.kind == "next_delivery":
-            orders = self.coordinator.data or {}
-            return orders.get(choose(orders, None))
-        return self.primary
+        orders = self.coordinator.data or {}
+        return orders.get(choose(orders))
 
     @property
     def native_value(self):
@@ -41,11 +39,7 @@ class WolttaajaSensor(WolttaajaEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         if self.kind == "active_orders":
-            return {
-                "orders": [
-                    order.as_dict() for _, order in sorted((self.coordinator.data or {}).items())
-                ]
-            }
+            return {"orders": [order.as_dict() for order in (self.coordinator.data or {}).values()]}
         return (
             self.selected.as_dict()
             if self.selected
