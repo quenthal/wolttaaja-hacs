@@ -4,6 +4,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from homeassistant.config_entries import ConfigEntryDisabler
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -62,24 +63,23 @@ async def test_counts_polling_and_identity(hass, count):
         assert all(o.eta is None for o in data.values())
 
 
-async def test_primary_eta_changes_and_completion(hass):
+async def test_next_eta_changes_and_completion(hass):
     api = api_for(["a", "b"])
     now = dt_util.utcnow()
     api.fetch_order_details.side_effect = [
         {"delivery_eta": (now + timedelta(minutes=m)).isoformat()} for m in (20, 30, 40, 10, 9)
     ]
     c = await coordinator(hass, api)
-    await c._async_update_data()
-    assert c.primary == "a"
     data = await c._async_update_data()
-    assert c.primary == "a"
-    assert choose(data, None) == "b"
+    assert choose(data) == "a"
+    data = await c._async_update_data()
+    assert choose(data) == "b"
     api.fetch_orders.return_value = [
         summary("b"),
         {"purchase_id": "a", "telemetry": {"order_status_type": "DELIVERED"}},
     ]
-    await c._async_update_data()
-    assert c.primary == "b"
+    data = await c._async_update_data()
+    assert choose(data) == "b"
 
 
 @pytest.mark.parametrize(
@@ -121,7 +121,7 @@ async def test_restart_dedup_new_order_and_cleanup(hass):
     assert len(events) == 1
     restored = WolttaajaCoordinator(hass, c.entry, api)
     await restored.async_load()
-    assert restored.primary == "a"
+    assert restored.order_sequence == ["a"]
     await restored._async_update_data()
     await hass.async_block_till_done()
     assert len(events) == 1
@@ -160,7 +160,7 @@ async def test_api_failure(hass, error):
         assert c.update_interval.total_seconds() == 120
 
 
-async def test_four_real_entities_unavailable_options_and_unload(hass):
+async def test_three_real_entities_unavailable_options_and_unload(hass):
     api = api_for(["a", "b"])
     entry = MockConfigEntry(domain="wolttaaja", data=DATA)
     entry.add_to_hass(hass)
@@ -169,17 +169,17 @@ async def test_four_real_entities_unavailable_options_and_unload(hass):
         await hass.async_block_till_done()
         assert hass.states.get("sensor.wolttaaja_active_orders").state == "2"
         assert hass.states.get("sensor.wolttaaja_next_delivery").state == "unknown"
-        assert hass.states.get("binary_sensor.wolttaaja_delivery_active").state == "on"
-        assert len(er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)) == 4
+        assert hass.states.get("binary_sensor.wolttaaja_delivery_active") is None
+        assert len(er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)) == 3
         attrs = hass.states.get("sensor.wolttaaja_active_orders").attributes["orders"]
         assert {o["order_id"] for o in attrs} == {"a", "b"}
         api.fetch_orders.side_effect = WoltConnectionError("failed")
         await entry.runtime_data.async_refresh()
-        assert hass.states.get("binary_sensor.wolttaaja_delivery_active").state == "unavailable"
+        assert hass.states.get("sensor.wolttaaja_active_orders").state == "unavailable"
         api.fetch_orders.side_effect = None
         api.fetch_orders.return_value = []
         await entry.runtime_data.async_refresh()
-        assert hass.states.get("binary_sensor.wolttaaja_delivery_active").state == "off"
+        assert hass.states.get("sensor.wolttaaja_active_orders").state == "0"
         hass.config_entries.async_update_entry(entry, options={"idle_interval": 600})
         await hass.async_block_till_done()
         assert entry.runtime_data.update_interval.total_seconds() == 600
@@ -323,3 +323,137 @@ async def test_completed_legacy_order_with_stale_tracking_link(hass):
     c = await coordinator(hass, api)
     assert await c._async_update_data() == {}
     api.fetch_order_details.assert_not_awaited()
+
+
+async def test_three_order_selection_list_order_restart_and_completion(hass):
+    """ETA selection changes together; first-seen list order never follows ETA."""
+    api = api_for(["z"])
+    now = dt_util.utcnow()
+    minutes = {"z": 20, "b": 30, "a": 40}
+    statuses = {"z": "preparing", "b": "ready", "a": "delivery"}
+
+    async def details(oid):
+        return {
+            "delivery_eta": (now + timedelta(minutes=minutes[oid])).isoformat(),
+            "status": statuses[oid],
+        }
+
+    api.fetch_order_details.side_effect = details
+    entry = MockConfigEntry(domain="wolttaaja", data=DATA)
+    entry.add_to_hass(hass)
+
+    def check(selected, sequence):
+        eta = hass.states.get("sensor.wolttaaja_next_delivery")
+        status = hass.states.get("sensor.wolttaaja_order_status")
+        count = hass.states.get("sensor.wolttaaja_active_orders")
+        assert eta.attributes["order_id"] == status.attributes["order_id"] == selected
+        for key in ("order_id", "restaurant", "status", "eta"):
+            assert eta.attributes[key] == status.attributes[key]
+        assert count.state == str(len(sequence))
+        assert [o["order_id"] for o in count.attributes["orders"]] == sequence
+        if selected:
+            assert (
+                eta.state
+                == (now + timedelta(minutes=minutes[selected])).replace(microsecond=0).isoformat()
+            )
+            assert status.state == status.attributes["status"]
+        else:
+            assert eta.state == status.state == "unknown"
+
+    with patch("custom_components.wolttaaja.WoltApi", return_value=api):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        check("z", ["z"])
+        # Newest-first API response must append newcomers after already seen z.
+        api.fetch_orders.return_value = [summary("b"), summary("a"), summary("z")]
+        await entry.runtime_data.async_refresh()
+        check("z", ["z", "b", "a"])
+        minutes.update(a=10, b=45)
+        api.fetch_orders.return_value = [summary("a"), summary("z"), summary("b")]
+        await entry.runtime_data.async_refresh()
+        check("a", ["z", "b", "a"])
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        check("a", ["z", "b", "a"])
+        api.fetch_orders.return_value = [
+            summary("b"),
+            summary("z"),
+            {"purchase_id": "a", "telemetry": {"order_status_type": "DELIVERED"}},
+        ]
+        await entry.runtime_data.async_refresh()
+        check("z", ["z", "b"])
+        api.fetch_orders.return_value = [summary("b")]
+        await entry.runtime_data.async_refresh()
+        check("b", ["b"])
+        api.fetch_orders.return_value = [
+            {"purchase_id": "b", "telemetry": {"order_status_type": "CANCELLED"}}
+        ]
+        await entry.runtime_data.async_refresh()
+        check(None, [])
+        assert entry.runtime_data.order_sequence == []
+        assert entry.runtime_data.update_interval.total_seconds() == 300
+        await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_upgrade_removes_only_owned_retired_entity(hass):
+    entry = MockConfigEntry(domain="wolttaaja", data=DATA)
+    other = MockConfigEntry(domain="wolttaaja", data=DATA, disabled_by=ConfigEntryDisabler.USER)
+    entry.add_to_hass(hass)
+    other.add_to_hass(hass)
+    registry = er.async_get(hass)
+    old = registry.async_get_or_create(
+        "binary_sensor",
+        "wolttaaja",
+        f"{entry.entry_id}_delivery_active",
+        config_entry=entry,
+        suggested_object_id="renamed_delivery",
+    )
+    foreign = registry.async_get_or_create(
+        "binary_sensor", "wolttaaja", f"{other.entry_id}_delivery_active", config_entry=other
+    )
+    with patch("custom_components.wolttaaja.WoltApi", return_value=api_for()):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert registry.async_get(old.entity_id) is None
+        assert registry.async_get(foreign.entity_id) is not None
+        assert len(er.async_entries_for_config_entry(registry, entry.entry_id)) == 3
+        await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_old_store_preserves_dedup_and_discards_primary(hass):
+    api = api_for(["a"])
+    api.fetch_order_details.return_value = {
+        "eta": (dt_util.utcnow() + timedelta(minutes=4)).isoformat()
+    }
+    c = await coordinator(hass, api)
+    await c.store.async_save(
+        {"primary": "old", "notified": {"a": dt_util.utcnow().timestamp()}, "retry_until": 0}
+    )
+    await c.async_load()
+    events = []
+    hass.bus.async_listen("wolttaaja_delivery_approaching", lambda e: events.append(e))
+    await c._async_update_data()
+    await hass.async_block_till_done()
+    assert events == []
+    saved = await c.store.async_load()
+    assert "primary" not in saved
+    assert saved["order_sequence"] == ["a"]
+    assert "a" in saved["notified"]
+
+
+def test_selection_missing_eta_and_ties_is_shared():
+    from types import SimpleNamespace
+
+    from custom_components.wolttaaja.sensor import WolttaajaSensor
+
+    orders = {"z": order("z"), "a": order("a")}
+    coordinator = SimpleNamespace(data=orders, entry=SimpleNamespace(entry_id="test"))
+    eta = WolttaajaSensor(coordinator, "next_delivery")
+    status = WolttaajaSensor(coordinator, "order_status")
+    assert eta.selected == status.selected == orders["a"]
+    assert eta.native_value is None
+    orders["z"] = order("z", 20)
+    assert eta.selected == status.selected == orders["z"]
+    orders["a"] = Order("a", "Same", "pending", orders["z"].eta)
+    assert eta.selected == status.selected == orders["a"]

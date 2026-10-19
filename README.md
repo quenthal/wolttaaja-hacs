@@ -1,6 +1,6 @@
 # Wolttaaja
 
-An independent, unofficial Wolt integration for Home Assistant. Four permanent entities,
+An independent, unofficial Wolt integration for Home Assistant. Three permanent sensors,
 one shared asynchronous coordinator, and grouped arrival events. No per-order entities,
 location tracking, product lists or order history. Supports one Wolt account per HA instance.
 
@@ -41,20 +41,20 @@ trigger Home Assistant reauthentication. Tokens and API bodies are never logged 
 ## Entities
 
 The default entity IDs below assume they are not already occupied; HA can append a suffix.
-All four have permanent unique IDs tied to the config entry.
+All three have permanent unique IDs tied to the config entry.
 
 | Entity | State | Attributes |
 | --- | --- | --- |
 | `sensor.wolttaaja_next_delivery` | Earliest active ETA, timestamp | `order_id`, `restaurant`, `status`, `eta` |
-| `sensor.wolttaaja_order_status` | Sticky primary order status | `order_id`, `restaurant`, `status`, `eta` |
+| `sensor.wolttaaja_order_status` | Status of the earliest-ETA order | `order_id`, `restaurant`, `status`, `eta` |
 | `sensor.wolttaaja_active_orders` | Integer count | `orders`: list of the four fields above |
-| `binary_sensor.wolttaaja_delivery_active` | On when any order is active | No order details |
 
-`next_delivery` is independent of the sticky primary: an ETA change can change the next delivery,
-but does not change the primary. Missing ETA or no active orders means an unknown timestamp.
-If all active ETAs are missing, a stable ID tie-break selects the restaurant attributes.
-With no primary, order status is unknown. All entities become unavailable when an API failure
-prevents a reliable complete snapshot, including a failed active-order details request.
+`next_delivery` and `order_status` always select the same order from the same coordinator
+snapshot: the earliest known ETA. They switch together when ETA ordering changes, including
+all four order attributes. Equal ETAs use stable ID order. Missing ETAs sort last; if all are
+missing, stable ID selects the order and its restaurant/status while the timestamp is unknown.
+With no orders, both sensors are unknown and the count is zero. All sensors become unavailable
+when an API failure prevents a reliable complete snapshot, including a failed details request.
 
 Statuses normalize to `pending`, `preparing`, `ready_for_pickup`, `picked_up`, `on_the_way`,
 `arriving`, `delivered`, `cancelled`, `failed`, or `unknown`. Unknown text is never exposed raw.
@@ -62,8 +62,26 @@ Wolt's order-list telemetry determines which orders remain active. A completed/c
 or one absent from a successful full order-list response, leaves the active snapshot.
 
 Orders retain Wolt purchase IDs: same restaurant, courier or ETA never merges identities.
-The primary stays selected while active, including across restarts; after it ends, select the
-earliest known ETA, missing ETAs last, then stable ID. No old entity migration is provided.
+The `orders` list uses first-observed order, independent of ETA. For example, `[1, 2, 3]`
+stays in that order when order 3 becomes the next delivery; once 3 completes it becomes `[1, 2]`.
+This order survives restarts. Newly observed orders append to the list; orders first seen in
+the same poll use API response order. The verified API has no reliable creation-time field,
+so this is observation order rather than a guessed purchase chronology.
+
+Completed/cancelled orders (or orders absent from a successful full list) leave immediately
+on that update. There is no completion cooldown or missing-order grace period. API failures
+never count as completion. The count returns to zero and idle polling resumes after the last
+order leaves. Arrival notification deduplication is independent of which order is selected.
+
+### Upgrading from the four-entity version
+
+The retired `binary_sensor.wolttaaja_delivery_active` is removed from this integration's entity
+registry on successful setup, even if renamed. The three sensor unique IDs remain unchanged.
+Replace binary-sensor conditions with a numeric-state condition on `sensor.wolttaaja_active_orders`
+(`above: 0`). For a template, check `has_value('sensor.wolttaaja_active_orders')` before converting
+the state to a number: unavailable is not the same as zero. Existing notification IDs remain
+stored; the obsolete sticky primary is discarded. List ordering begins with the first successful
+poll after upgrade. Update any cards or automations using the retired entity.
 
 ## Options
 
@@ -107,7 +125,7 @@ ETAs. Several separate groups can fire in one cycle. A newly discovered order st
 own event after a previous group has fired. No ETA means no notification; past/stale ETAs do not
 trigger arrival notifications. A changed ETA does not re-arm an already notified order.
 
-IDs and primary selection live in Home Assistant `Store`, separate from Recorder. Inactive
+Notification IDs and active list ordering live in Home Assistant `Store`, separate from Recorder. Inactive
 notification IDs expire after 30 days; still-active IDs are retained. Removal of the integration
 removes its Store. No raw order history is persisted.
 
@@ -155,7 +173,7 @@ mode: queued
 
 Only order ID, restaurant, normalized status and ETA are published. The integration uses HA's
 `_unrecorded_attributes` for all order attributes, including `orders`. Scalar state changes can
-still enter Recorder. To exclude all four entities entirely:
+still enter Recorder. To exclude all three sensors entirely:
 
 ```yaml
 recorder:
@@ -164,7 +182,6 @@ recorder:
       - sensor.wolttaaja_next_delivery
       - sensor.wolttaaja_order_status
       - sensor.wolttaaja_active_orders
-      - binary_sensor.wolttaaja_delivery_active
 ```
 
 Merge this with your existing Recorder configuration. Automations, traces, notifications, backups
@@ -186,7 +203,7 @@ IDs in `.storage` should be protected with your HA configuration and backups.
 Run offline tests on Linux with `uv sync --python 3.14`, then `uv run pytest -q`,
 `uv run ruff check .` and `uv run ruff format --check .`. CI also runs Hassfest and HACS validation.
 Tests cover lifecycle, multi-order selection, grouping, restart persistence, API authentication,
-rate limits, config flow, four real HA entities, options and unload.
+rate limits, config flow, three real HA entities, options and unload.
 
 ## Credits and license
 
@@ -196,6 +213,6 @@ The asynchronous API client, token refresh flow, status/ETA parsers and API test
 from that MIT-licensed project. Its `Copyright (c) 2026 selfish` notice and full license are
 preserved in [LICENSE](LICENSE) and inside the installed integration.
 
-The supplied starter prototype informed the four-entity design. Wolttaaja replaces its in-memory
-selector and patch workflow with an independent integration, persistent lifecycle state, options,
+The supplied starter prototype informed the original four-entity design. Wolttaaja replaces its in-memory
+selector and patch workflow with an independent integration, persistent notification/list state, synchronized next-delivery sensors, options,
 notifications and tests. It does not depend on Wait for Wolt being installed.

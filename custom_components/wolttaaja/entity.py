@@ -20,7 +20,3 @@ class WolttaajaEntity(CoordinatorEntity):
             name="Wolttaaja",
             manufacturer="Wolttaaja",
         )
-
-    @property
-    def primary(self):
-        return (self.coordinator.data or {}).get(self.coordinator.primary)

@@ -19,7 +19,7 @@ from .api import (
     is_active_order,
 )
 from .const import DEFAULTS, DOMAIN, EVENT
-from .models import choose, groups, normalize_order_status, project
+from .models import groups, normalize_order_status, project
 
 _LOGGER = logging.getLogger(__name__)
 RETENTION = 30 * 86400
@@ -39,24 +39,24 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self.api = api
         self.store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
-        self.primary = None
+        self.order_sequence = []
         self.notified = {}
         self._saved = None
 
     async def async_load(self):
         saved = await self.store.async_load()
         if saved:
-            self.primary = saved.get("primary")
+            self.order_sequence = saved.get("order_sequence", [])
             self.notified = saved.get("notified", {})
             # A reload/restart must not bypass server-requested cooldown.
             remaining = saved.get("retry_until", 0) - dt_util.utcnow().timestamp()
             self.api.retry_at = monotonic() + max(0, remaining)
             self._saved = saved
 
-    async def _save(self, primary, notified):
+    async def _save(self, order_sequence, notified):
         remaining = max(0, self.api.retry_at - monotonic())
         saved = {
-            "primary": primary,
+            "order_sequence": order_sequence,
             "notified": notified,
             "retry_until": dt_util.utcnow().timestamp() + remaining if remaining else 0,
         }
@@ -112,13 +112,18 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             self.update_interval = timedelta(
                 seconds=max(options["active_interval"], err.retry_after)
             )
-            await self._save(self.primary, self.notified)
+            await self._save(self.order_sequence, self.notified)
             raise UpdateFailed("Wolt rate limit reached; waiting before retry") from err
         except WoltApiError as err:
             raise UpdateFailed("Unable to update Wolt orders") from err
 
         now = dt_util.utcnow()
-        primary = choose(orders, self.primary)
+        # Keep first-seen order across ETA changes, API response reordering and restarts.
+        # Only active IDs persist. New IDs from the same poll use response order.
+        sequence = [oid for oid in self.order_sequence if oid in orders]
+        known = set(sequence)
+        sequence.extend(oid for oid in orders if oid not in known)
+        orders = {oid: orders[oid] for oid in sequence}
         notified = {
             key: stamp
             for key, stamp in self.notified.items()
@@ -130,10 +135,10 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         # Persist before firing: ordinary restarts cannot duplicate notifications.
         # A crash between this write and event delivery can lose an event (documented).
         try:
-            await self._save(primary, notified)
+            await self._save(sequence, notified)
         except OSError as err:
             raise UpdateFailed("Unable to persist Wolttaaja notification state") from err
-        self.primary, self.notified = primary, notified
+        self.order_sequence, self.notified = sequence, notified
         for batch in batches:
             self.hass.bus.async_fire(
                 EVENT,

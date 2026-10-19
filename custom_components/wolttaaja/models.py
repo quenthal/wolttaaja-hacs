@@ -172,10 +172,8 @@ def project(order_id, summary, details):
     )
 
 
-def choose(orders, primary):
-    """Keep primary sticky; known ETA first, stable ID breaks ties."""
-    if primary in orders:
-        return primary
+def choose(orders):
+    """Select earliest known ETA; stable ID breaks ties and handles missing ETAs."""
     return min(
         orders,
         key=lambda key: (
