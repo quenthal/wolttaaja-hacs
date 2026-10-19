@@ -1,0 +1,29 @@
+"""Wolttaaja constants."""
+
+DOMAIN = "wolttaaja"
+DEFAULTS = {"idle_interval": 300, "active_interval": 30, "eta_lead": 5, "grouping_window": 3}
+LIMITS = {
+    "idle_interval": (60, 1800),
+    "active_interval": (15, 300),
+    "eta_lead": (1, 15),
+    "grouping_window": (0, 10),
+}
+EVENT = "wolttaaja_delivery_approaching"
+
+REFRESH_URL = "https://authentication.wolt.com/v1/wauth2/access_token"
+# Updated endpoints based on the current Wolt web client
+ACTIVE_ORDERS_URL = "https://consumer-api.wolt.com/order-xp/web/v1/pages/orders"
+ORDER_DETAILS_URL = "https://restaurant-api.wolt.com/v2/order_details/purchase_tracking/{}"
+ORDER_DETAILS_FALLBACK_URL = (
+    "https://restaurant-api.wolt.com/v2/order_details/purchase_tracking?purchase_id={}"
+)
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:138.0) Gecko/20100101 Firefox/138.0",
+    "Accept": "application/json, text/plain, */*",
+    "Platform": "Web",
+    "App-Language": "en",
+    "ClientVersionNumber": "1.16.79",
+    "Client-Version": "1.16.79",
+    "App-Currency-Format": "wqQxLDIzNC41Ng==",
+}
