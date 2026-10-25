@@ -18,8 +18,8 @@ from .api import (
     WoltInvalidPayloadError,
     WoltRateLimitError,
 )
-from .const import DEFAULTS, DOMAIN, EVENT
-from .models import groups, lifecycle, lifecycle_value, order_identity, project
+from .const import DEFAULTS, DELAYED_EVENT, DOMAIN, EVENT
+from .models import delays, groups, lifecycle, lifecycle_value, order_identity, project
 
 _LOGGER = logging.getLogger(__name__)
 RETENTION = 30 * 86400
@@ -41,6 +41,8 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         self.store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
         self.order_sequence = []
         self.notified = {}
+        # ETA last told to the user per active order, as ISO text.
+        self.announced = {}
         self._saved = None
         self._ignored_lifecycles = set()
 
@@ -56,16 +58,18 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         if saved:
             self.order_sequence = saved.get("order_sequence", [])
             self.notified = saved.get("notified", {})
+            self.announced = saved.get("announced", {})
             # A reload/restart must not bypass server-requested cooldown.
             remaining = saved.get("retry_until", 0) - dt_util.utcnow().timestamp()
             self.api.retry_at = monotonic() + max(0, remaining)
             self._saved = saved
 
-    async def _save(self, order_sequence, notified):
+    async def _save(self, order_sequence, notified, announced):
         remaining = max(0, self.api.retry_at - monotonic())
         saved = {
             "order_sequence": order_sequence,
             "notified": notified,
+            "announced": announced,
             "retry_until": dt_util.utcnow().timestamp() + remaining if remaining else 0,
         }
         if saved != self._saved:
@@ -119,7 +123,7 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             self.update_interval = timedelta(
                 seconds=max(options["active_interval"], err.retry_after)
             )
-            await self._save(self.order_sequence, self.notified)
+            await self._save(self.order_sequence, self.notified, self.announced)
             raise UpdateFailed("Wolt rate limit reached; waiting before retry") from err
         except WoltApiError as err:
             raise UpdateFailed("Unable to update Wolt orders") from err
@@ -136,16 +140,37 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             for key, stamp in self.notified.items()
             if key in orders or stamp > now.timestamp() - RETENTION
         }
+        announced = {key: eta for key, eta in self.announced.items() if key in orders}
+        delayed = delays(orders, announced, options["delay_threshold"])
         batches = groups(orders, notified, now, options["eta_lead"], options["grouping_window"])
         for batch in batches:
             notified.update({o.order_id: now.timestamp() for o in batch})
+        # Later delays are measured from the ETA in the most recent event.
+        for order in [o for o, _ in delayed] + [o for batch in batches for o in batch]:
+            announced[order.order_id] = order.eta.isoformat()
         # Persist before firing: ordinary restarts cannot duplicate notifications.
         # A crash between this write and event delivery can lose an event (documented).
         try:
-            await self._save(sequence, notified)
+            await self._save(sequence, notified, announced)
         except OSError as err:
             raise UpdateFailed("Unable to persist Wolttaaja notification state") from err
-        self.order_sequence, self.notified = sequence, notified
+        self.order_sequence, self.notified, self.announced = sequence, notified, announced
+        if delayed:
+            self.hass.bus.async_fire(
+                DELAYED_EVENT,
+                {
+                    "order_count": len(delayed),
+                    "delay_threshold_minutes": options["delay_threshold"],
+                    "orders": [
+                        {
+                            **o.as_dict(),
+                            "previous_eta": previous.isoformat(),
+                            "delay_minutes": round((o.eta - previous).total_seconds() / 60),
+                        }
+                        for o, previous in delayed
+                    ],
+                },
+            )
         for batch in batches:
             self.hass.bus.async_fire(
                 EVENT,

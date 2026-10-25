@@ -37,7 +37,8 @@
           "idle_interval": "Päivitysväli ilman tilauksia (sekuntia)",
           "active_interval": "Päivitysväli aktiivisen tilauksen aikana (sekuntia)",
           "eta_lead": "Ilmoitus ennen arvioitua saapumista (minuuttia)",
-          "grouping_window": "Ilmoitusten ryhmittelyikkuna (minuuttia)"
+          "grouping_window": "Ilmoitusten ryhmittelyikkuna (minuuttia)",
+          "delay_threshold": "Myöhästymisilmoituksen kynnys (minuuttia, 0 = pois)"
         }
       }
     }

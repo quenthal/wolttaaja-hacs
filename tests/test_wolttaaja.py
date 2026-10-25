@@ -522,3 +522,78 @@ def test_unknown_status_is_not_an_enum_option():
     assert "unknown" not in status.options
     assert status.native_value is None
     assert status.extra_state_attributes["status"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "shift,threshold,expected",
+    [(10, 10, True), (9, 10, False), (-15, 10, False), (30, 0, False)],
+)
+def test_delay_detection(shift, threshold, expected):
+    from custom_components.wolttaaja.models import delays
+
+    now = dt_util.utcnow()
+    orders = {"a": Order("a", "Same", "on_the_way", now + timedelta(minutes=shift))}
+    found = delays(orders, {"a": now.isoformat()}, threshold)
+    assert [o.order_id for o, _ in found] == (["a"] if expected else [])
+    assert delays(orders, {}, threshold) == []
+
+
+async def test_delay_event_after_arrival_event(hass):
+    """A slipped ETA after notifying fires one delayed event; small jitter does not."""
+    api = api_for(["a"])
+    c = await coordinator(hass, api)
+    arrivals, delayed = [], []
+    hass.bus.async_listen("wolttaaja_delivery_approaching", lambda e: arrivals.append(e.data))
+    hass.bus.async_listen("wolttaaja_delivery_delayed", lambda e: delayed.append(e.data))
+    base = dt_util.utcnow()
+
+    async def poll(minutes, target=c):
+        api.fetch_order_details.return_value = {
+            "delivery_eta": (base + timedelta(minutes=minutes)).isoformat()
+        }
+        await target._async_update_data()
+        await hass.async_block_till_done()
+
+    await poll(20)  # Not yet announced: moving it is not a delay.
+    await poll(32)
+    assert delayed == []
+    await poll(4)
+    assert len(arrivals) == 1
+    await poll(8)
+    assert delayed == []
+    await poll(16)
+    assert len(delayed) == 1
+    event = delayed[0]
+    assert event["order_count"] == 1 and event["delay_threshold_minutes"] == 10
+    assert event["orders"][0]["delay_minutes"] == 12
+    assert event["orders"][0]["previous_eta"] == (base + timedelta(minutes=4)).isoformat()
+    await poll(20)  # Measured from the last event's ETA (16), so no repeat.
+    assert len(delayed) == 1
+
+    restored = WolttaajaCoordinator(hass, c.entry, api)
+    await restored.async_load()
+    await poll(20, restored)
+    assert len(delayed) == 1 and len(arrivals) == 1
+    await poll(27, restored)
+    assert len(delayed) == 2
+
+    api.fetch_orders.return_value = []
+    await restored._async_update_data()
+    assert restored.announced == {}
+
+
+async def test_delay_events_can_be_disabled(hass):
+    api = api_for(["a"])
+    entry = MockConfigEntry(domain="wolttaaja", data=DATA, options={"delay_threshold": 0})
+    entry.add_to_hass(hass)
+    c = WolttaajaCoordinator(hass, entry, api)
+    await c.async_load()
+    delayed = []
+    hass.bus.async_listen("wolttaaja_delivery_delayed", lambda e: delayed.append(e))
+    for minutes in (4, 40):
+        api.fetch_order_details.return_value = {
+            "delivery_eta": (dt_util.utcnow() + timedelta(minutes=minutes)).isoformat()
+        }
+        await c._async_update_data()
+    await hass.async_block_till_done()
+    assert delayed == []
