@@ -103,9 +103,23 @@ def test_grouping(minutes, window, sizes):
     assert groups(orders, orders, now, 5, window) == []
 
 
-def test_missing_and_past_eta_do_not_notify():
-    orders = {"a": order("a"), "b": order("b", -20)}
-    assert groups(orders, {}, dt_util.utcnow(), 5, 3) == []
+def test_missing_eta_does_not_notify():
+    assert groups({"a": order("a")}, {}, dt_util.utcnow(), 5, 3) == []
+
+
+async def test_eta_that_passed_between_polls_still_notifies_once(hass):
+    """A courier ahead of schedule can jump the ETA past the window between polls."""
+    api = api_for(["a"])
+    c = await coordinator(hass, api)
+    events = []
+    hass.bus.async_listen("wolttaaja_delivery_approaching", lambda e: events.append(e.data))
+    for minutes in (6, -0.5, -1):
+        api.fetch_order_details.return_value = {
+            "delivery_eta": (dt_util.utcnow() + timedelta(minutes=minutes)).isoformat()
+        }
+        await c._async_update_data()
+    await hass.async_block_till_done()
+    assert [e["orders"][0]["order_id"] for e in events] == ["a"]
 
 
 async def test_restart_dedup_new_order_and_cleanup(hass):
@@ -241,15 +255,34 @@ async def test_storage_failure_does_not_fire_or_mark(hass):
     assert len(events) == 1
 
 
-@pytest.mark.parametrize(
-    "payload", [{"telemetry": {}}, {"telemetry": None}, {"order_status_type": "NEW_UNKNOWN"}, {}]
-)
-async def test_unknown_lifecycle_is_unavailable(hass, payload):
-    api = api_for()
-    api.fetch_orders.return_value = [payload]
+UNKNOWN_LIFECYCLES = [
+    {"telemetry": {}},
+    {"telemetry": None},
+    {"order_status_type": "NEW_UNKNOWN"},
+    {"telemetry": {"order_status_type": "SCHEDULED"}},
+    {},
+]
+
+
+@pytest.mark.parametrize("payload", UNKNOWN_LIFECYCLES)
+async def test_unknown_lifecycle_of_untracked_order_is_ignored(hass, payload):
+    """An unreadable old or unfamiliar order must not take every sensor down."""
+    api = api_for(["a"])
+    api.fetch_orders.return_value = [summary("a"), {"purchase_id": "old", **payload}]
     c = await coordinator(hass, api)
+    assert list(await c._async_update_data()) == ["a"]
+
+
+@pytest.mark.parametrize("payload", UNKNOWN_LIFECYCLES)
+async def test_unknown_lifecycle_of_tracked_order_is_unavailable(hass, payload):
+    """Unreadable state of a tracked order is not evidence that it completed."""
+    api = api_for(["a"])
+    c = await coordinator(hass, api)
+    await c._async_update_data()
+    api.fetch_orders.return_value = [{"purchase_id": "a", **payload}]
     with pytest.raises(UpdateFailed):
         await c._async_update_data()
+    assert c.order_sequence == ["a"]
 
 
 async def test_rate_limit_survives_restart(hass):
@@ -418,6 +451,25 @@ async def test_upgrade_removes_only_owned_retired_entity(hass):
         assert registry.async_get(old.entity_id) is None
         assert registry.async_get(foreign.entity_id) is not None
         assert len(er.async_entries_for_config_entry(registry, entry.entry_id)) == 3
+        assert entry.minor_version == 2
+        await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_finnish_names_keep_english_entity_ids(hass):
+    hass.config.language = "fi"
+    api = api_for(["a"])
+    api.fetch_order_details.return_value = {"status": "preparing"}
+    entry = MockConfigEntry(domain="wolttaaja", data=DATA, minor_version=2)
+    entry.add_to_hass(hass)
+    with patch("custom_components.wolttaaja.WoltApi", return_value=api):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        status = hass.states.get("sensor.wolttaaja_order_status")
+        assert status.state == "preparing"
+        assert status.attributes["friendly_name"] == "Wolttaaja Tilauksen tila"
+        assert "ready_for_pickup" in status.attributes["options"]
+        assert hass.states.get("sensor.wolttaaja_next_delivery") is not None
+        assert hass.states.get("sensor.wolttaaja_active_orders").state == "1"
         await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -457,3 +509,16 @@ def test_selection_missing_eta_and_ties_is_shared():
     assert eta.selected == status.selected == orders["z"]
     orders["a"] = Order("a", "Same", "pending", orders["z"].eta)
     assert eta.selected == status.selected == orders["a"]
+
+
+def test_unknown_status_is_not_an_enum_option():
+    from types import SimpleNamespace
+
+    from custom_components.wolttaaja.sensor import WolttaajaSensor
+
+    orders = {"a": Order("a", "Same", "unknown", None)}
+    coordinator = SimpleNamespace(data=orders, entry=SimpleNamespace(entry_id="test"))
+    status = WolttaajaSensor(coordinator, "order_status")
+    assert "unknown" not in status.options
+    assert status.native_value is None
+    assert status.extra_state_attributes["status"] == "unknown"

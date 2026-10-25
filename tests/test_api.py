@@ -108,7 +108,7 @@ async def test_active_orders_success_uses_current_token_first() -> None:
     }
     session = FakeSession(FakeResponse(200, payload))
 
-    assert await make_api(session).fetch_active_orders() == payload["orders"]
+    assert await make_api(session).fetch_orders() == payload["orders"]
     assert len(session.calls) == 1
     assert session.calls[0]["url"] == ACTIVE_ORDERS_URL
     assert session.calls[0]["headers"]["authorization"] == ("Bearer test-access-token")
@@ -116,101 +116,9 @@ async def test_active_orders_success_uses_current_token_first() -> None:
 
 
 @pytest.mark.parametrize(
-    "status_type",
-    ["DELIVERED", "COMPLETED", "PENDING", "UNKNOWN", ""],
-)
-async def test_active_orders_rejects_every_non_active_telemetry_state(
-    status_type: str,
-) -> None:
-    """Treat telemetry as authoritative even when legacy hints look active."""
-    active = {
-        "purchase_id": "purchase-active",
-        "telemetry": {"order_status_type": "IN_PROGRESS"},
-    }
-    not_active = {
-        "purchase_id": "purchase-not-active",
-        "telemetry": {"order_status_type": status_type},
-        "call_to_action": {"type": "ORDER_TRACKING"},
-        "status": {"value": "Preparing"},
-    }
-    session = FakeSession(FakeResponse(200, {"orders": [active, not_active]}))
-
-    assert await make_api(session).fetch_active_orders() == [active]
-
-
-async def test_active_orders_keeps_legacy_tracking_fallback_without_telemetry() -> None:
-    """Keep compatibility with older order items that omit telemetry entirely."""
-    legacy_active = {
-        "order_id": "legacy-order-active",
-        "call_to_action": {"type": "ORDER_TRACKING"},
-    }
-    session = FakeSession(FakeResponse(200, {"orders": [legacy_active]}))
-
-    assert await make_api(session).fetch_active_orders() == [legacy_active]
-
-
-@pytest.mark.parametrize(
-    "telemetry",
-    [{}, None, [], {"order_status_type": None}],
-)
-async def test_active_orders_rejects_present_incomplete_telemetry(
-    telemetry: Any,
-) -> None:
-    """Never let a malformed present telemetry object reach legacy heuristics."""
-    not_active = {
-        "purchase_id": "purchase-not-active",
-        "telemetry": telemetry,
-        "call_to_action": {"type": "ORDER_TRACKING"},
-        "status": {"value": "Preparing"},
-    }
-    session = FakeSession(FakeResponse(200, {"orders": [not_active]}))
-
-    assert await make_api(session).fetch_active_orders() == []
-
-
-@pytest.mark.parametrize("status_type", ["IN_PROGRESS", "COMPLETED", None])
-async def test_active_orders_treats_legacy_top_level_status_as_authoritative(
-    status_type: str | None,
-) -> None:
-    """Apply the same strict contract to the older top-level status field."""
-    order = {
-        "order_id": "legacy-order",
-        "order_status_type": status_type,
-        "call_to_action": {"type": "ORDER_TRACKING"},
-    }
-    session = FakeSession(FakeResponse(200, {"orders": [order]}))
-
-    expected = [order] if status_type == "IN_PROGRESS" else []
-    assert await make_api(session).fetch_active_orders() == expected
-
-
-@pytest.mark.parametrize(
-    ("status", "expected_active"),
-    [
-        ("Delivered", False),
-        ("Completed", False),
-        ("Finished", False),
-        ("not delivered", True),
-        ("not yet delivered", True),
-        ("undelivered", True),
-        ("delivery not yet completed", True),
-        ("cancelled", False),
-        ("not currently cancelled", True),
-    ],
-)
-async def test_legacy_status_fallback_respects_negation(status: str, expected_active: bool) -> None:
-    """Do not drop telemetry-less active orders because a final word is negated."""
-    order = {"order_id": "legacy-order", "status": {"value": status}}
-    session = FakeSession(FakeResponse(200, {"orders": [order]}))
-
-    expected = [order] if expected_active else []
-    assert await make_api(session).fetch_active_orders() == expected
-
-
-@pytest.mark.parametrize(
     ("method_name", "payload", "args"),
     [
-        ("fetch_active_orders", {"orders": {"unexpected": "shape"}}, ()),
+        ("fetch_orders", {"orders": {"unexpected": "shape"}}, ()),
         (
             "fetch_order_details",
             {"order_details": "unexpected-shape"},
@@ -235,7 +143,7 @@ async def test_malformed_json_raises_typed_payload_exception() -> None:
     api = make_api(FakeSession(FakeResponse(200, ValueError("malformed JSON"))))
 
     with pytest.raises(WoltInvalidPayloadError):
-        await api.fetch_active_orders()
+        await api.fetch_orders()
 
 
 async def test_missing_access_token_refreshes_before_first_account_request() -> None:
@@ -297,7 +205,7 @@ async def test_unauthorized_request_refreshes_persists_and_retries_once() -> Non
         token_update_callback=persist_tokens,
     )
 
-    assert await api.fetch_active_orders() == [
+    assert await api.fetch_orders() == [
         {
             "purchase_id": "purchase-001",
             "telemetry": {"order_status_type": "IN_PROGRESS"},
@@ -351,24 +259,38 @@ async def test_concurrent_unauthorized_requests_share_one_token_refresh() -> Non
     api._perform_request = perform_request  # type: ignore[method-assign]
     api._refresh_access_token = refresh_access_token  # type: ignore[method-assign]
 
-    first, second = await asyncio.gather(api.fetch_active_orders(), api.fetch_active_orders())
+    first, second = await asyncio.gather(api.fetch_orders(), api.fetch_orders())
 
     assert first == second == []
     assert initial_requests == 2
     assert refreshes == 1
 
 
-@pytest.mark.parametrize("failed_status", [400, 401, 403])
-async def test_authentication_failure_raises_without_looping(
-    failed_status: int,
+@pytest.mark.parametrize(
+    ("failed_status", "exception_type"),
+    [(400, WoltAuthenticationError), (401, WoltAuthenticationError), (403, WoltConnectionError)],
+)
+async def test_refresh_failure_raises_without_looping(
+    failed_status: int, exception_type: type[Exception]
 ) -> None:
-    """Surface refresh rejection as typed authentication failure."""
+    """Refresh rejection is an auth failure; a forbidden refresh is not proof of bad tokens."""
     session = FakeSession(FakeResponse(401), FakeResponse(failed_status, {"error": "no"}))
 
-    with pytest.raises(WoltAuthenticationError):
-        await make_api(session).fetch_active_orders()
+    with pytest.raises(exception_type):
+        await make_api(session).fetch_orders()
 
     assert len(session.calls) == 2
+
+
+async def test_forbidden_is_a_connection_failure_without_refresh() -> None:
+    """Bot protection answers 403; it must neither refresh tokens nor force reauth."""
+    session = FakeSession(FakeResponse(403))
+
+    with pytest.raises(WoltConnectionError) as exc:
+        await make_api(session).fetch_orders()
+
+    assert exc.value.status == 403
+    assert [call["url"] for call in session.calls] == [ACTIVE_ORDERS_URL]
 
 
 async def test_second_unauthorized_response_raises_without_refresh_loop() -> None:
@@ -380,7 +302,7 @@ async def test_second_unauthorized_response_raises_without_refresh_loop() -> Non
     )
 
     with pytest.raises(WoltAuthenticationError):
-        await make_api(session).fetch_active_orders()
+        await make_api(session).fetch_orders()
 
     assert len(session.calls) == 3
 
@@ -392,7 +314,7 @@ async def test_authenticated_request_omits_optional_session_header(
     """Allow accounts without Wolt's optional analytics session identifier."""
     session = FakeSession(FakeResponse(200, {"orders": []}))
 
-    assert await make_api(session, session_id).fetch_active_orders() == []
+    assert await make_api(session, session_id).fetch_orders() == []
     assert "w-wolt-session-id" not in session.calls[0]["headers"]
 
 
@@ -433,6 +355,35 @@ async def test_order_details_falls_back_to_query_form(
     ]
 
 
+async def test_order_details_remembers_answering_url_form() -> None:
+    """Skip the failing URL form on later polls instead of doubling every request."""
+    ok = {"order_details": {"status": "delivery"}}
+    session = FakeSession(FakeResponse(404), FakeResponse(200, ok), FakeResponse(200, ok))
+    api = make_api(session)
+
+    await api.fetch_order_details("a")
+    await api.fetch_order_details("b")
+
+    assert [call["url"] for call in session.calls] == [
+        ORDER_DETAILS_URL.format("a"),
+        ORDER_DETAILS_FALLBACK_URL.format("a"),
+        ORDER_DETAILS_FALLBACK_URL.format("b"),
+    ]
+
+
+async def test_order_details_keeps_url_form_when_both_forms_fail() -> None:
+    """An order that vanished from both forms must not flip the preference."""
+    ok = {"order_details": {"status": "delivery"}}
+    session = FakeSession(FakeResponse(404), FakeResponse(404), FakeResponse(200, ok))
+    api = make_api(session)
+
+    with pytest.raises(WoltConnectionError):
+        await api.fetch_order_details("gone")
+    await api.fetch_order_details("b")
+
+    assert session.calls[-1]["url"] == ORDER_DETAILS_URL.format("b")
+
+
 async def test_web_client_identifier_is_generated_per_api_instance() -> None:
     """Do not ship one captured browser identifier to every installation."""
     first_session = FakeSession(FakeResponse(200, {"orders": []}))
@@ -461,7 +412,7 @@ async def test_transport_and_rate_limit_failures_are_typed(
 ) -> None:
     """Distinguish retryable connectivity and rate-limit failures."""
     with pytest.raises(exception_type):
-        await make_api(FakeSession(response)).fetch_active_orders()
+        await make_api(FakeSession(response)).fetch_orders()
 
 
 async def test_retry_after_blocks_additional_requests():

@@ -41,5 +41,29 @@
         }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "next_delivery": {
+        "name": "Next delivery"
+      },
+      "order_status": {
+        "name": "Order status",
+        "state": {
+          "pending": "Pending",
+          "preparing": "Preparing",
+          "ready_for_pickup": "Ready for pickup",
+          "picked_up": "Picked up",
+          "on_the_way": "On the way",
+          "arriving": "Arriving",
+          "delivered": "Delivered",
+          "cancelled": "Cancelled",
+          "failed": "Failed"
+        }
+      },
+      "active_orders": {
+        "name": "Active orders"
+      }
+    }
   }
 }

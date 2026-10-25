@@ -5,7 +5,24 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
+
+STATUSES = (
+    "pending",
+    "preparing",
+    "ready_for_pickup",
+    "picked_up",
+    "on_the_way",
+    "arriving",
+    "delivered",
+    "cancelled",
+    "failed",
+)
+TERMINAL_STATUSES = frozenset({"delivered", "cancelled", "failed"})
+ACTIVE_LIFECYCLE = "IN_PROGRESS"
+TERMINAL_LIFECYCLES = frozenset(
+    {"DELIVERED", "COMPLETED", "CANCELLED", "CANCELED", "FAILED", "REJECTED", "REFUNDED"}
+)
 
 
 def _contains_non_negated_status(value: str, *fragments: str) -> bool:
@@ -21,25 +38,62 @@ def _contains_non_negated_status(value: str, *fragments: str) -> bool:
     )
 
 
-def _raw_status(order: dict[str, Any]) -> str | None:
-    """Extract a scalar status while respecting authoritative telemetry."""
-    status_type: Any = None
+def lifecycle_value(order: dict[str, Any]) -> tuple[bool, Any]:
+    """Return whether authoritative lifecycle data is present, and its value."""
     if "telemetry" in order:
         telemetry = order["telemetry"]
-        status_type = telemetry.get("order_status_type") if isinstance(telemetry, dict) else None
-        if str(status_type).upper() != "IN_PROGRESS":
-            return str(status_type) if status_type is not None else None
-    elif "order_status_type" in order:
-        status_type = order["order_status_type"]
-        if str(status_type).upper() != "IN_PROGRESS":
-            return str(status_type) if status_type is not None else None
+        return True, telemetry.get("order_status_type") if isinstance(telemetry, dict) else None
+    if "order_status_type" in order:
+        # Older payloads occasionally exposed the same state at the top level.
+        return True, order["order_status_type"]
+    return False, None
 
+
+def _display_status(order: dict[str, Any]) -> Any:
     status = order.get("status")
     if isinstance(status, dict):
         status = status.get("value") or status.get("text") or status.get("label")
+    return status
+
+
+def lifecycle(order: dict[str, Any]) -> Literal["active", "terminal"] | None:
+    """Classify an order-list item; ``None`` means the payload cannot tell."""
+    present, status_type = lifecycle_value(order)
+    if present:
+        # Telemetry is authoritative: a present but unknown or malformed value
+        # must never fall through to the legacy CTA/text heuristics.
+        value = str(status_type).upper()
+        if value == ACTIVE_LIFECYCLE:
+            return "active"
+        return "terminal" if value in TERMINAL_LIFECYCLES else None
+    if normalize_order_status(order) in TERMINAL_STATUSES:
+        return "terminal"
+    call_to_action = order.get("call_to_action")
+    if isinstance(call_to_action, dict):
+        action = call_to_action.get("link") or call_to_action.get("type")
+        if action and "ORDER_TRACKING" in str(action).upper():
+            return "active"
+    status = _display_status(order)
+    return "active" if isinstance(status, str) and status else None
+
+
+def order_identity(order: dict[str, Any]) -> str | None:
+    oid = order.get("purchase_id") or order.get("order_id") or order.get("id")
+    if not isinstance(oid, str | int) or isinstance(oid, bool) or not str(oid):
+        return None
+    return str(oid)
+
+
+def _raw_status(order: dict[str, Any]) -> str | None:
+    """Extract a scalar status while respecting authoritative telemetry."""
+    present, status_type = lifecycle_value(order)
+    if present and str(status_type).upper() != ACTIVE_LIFECYCLE:
+        return str(status_type) if status_type is not None else None
+
+    status = _display_status(order)
     if status is None:
         status = status_type
-    if str(status_type).upper() == "IN_PROGRESS" and status is not None:
+    if str(status_type).upper() == ACTIVE_LIFECYCLE and status is not None:
         display_status = re.sub(r"[^a-z0-9]+", "_", str(status).strip().lower()).strip("_")
         if _contains_non_negated_status(
             display_status,
@@ -186,9 +240,13 @@ def choose(orders):
 
 
 def groups(orders, notified, now, lead, window):
-    """Emit immediately, grouping by anchor ETA without transitive chaining."""
+    """Emit immediately, grouping by anchor ETA without transitive chaining.
+
+    An active order whose ETA already passed between polls is still due: it is
+    announced late rather than never.
+    """
     pending = sorted(
-        (o for o in orders.values() if o.order_id not in notified and o.eta and o.eta >= now),
+        (o for o in orders.values() if o.order_id not in notified and o.eta),
         key=lambda o: (o.eta, o.order_id),
     )
     result = []
