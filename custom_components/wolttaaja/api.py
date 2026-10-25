@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -26,52 +25,6 @@ from .const import (
 REQUEST_TIMEOUT = 10
 
 TokenUpdateCallback = Callable[[str, str], Awaitable[None] | None]
-
-
-def is_active_order(order: dict[str, Any]) -> bool:
-    """Return whether an order-list item represents a trackable active order."""
-    if "telemetry" in order:
-        telemetry = order["telemetry"]
-        status_type = telemetry.get("order_status_type") if isinstance(telemetry, dict) else None
-        # Current Wolt order-list payloads provide an authoritative telemetry
-        # object. Its absence from an otherwise present/malformed object must
-        # not reactivate an order through legacy CTA/text heuristics.
-        return str(status_type).upper() == "IN_PROGRESS"
-    if "order_status_type" in order:
-        # Older payloads occasionally exposed the same authoritative state at
-        # the top level instead of inside ``telemetry``.
-        return str(order["order_status_type"]).upper() == "IN_PROGRESS"
-
-    call_to_action = order.get("call_to_action")
-    if isinstance(call_to_action, dict):
-        action = call_to_action.get("link") or call_to_action.get("type")
-        if action and "ORDER_TRACKING" in str(action).upper():
-            return True
-
-    status = order.get("status")
-    if isinstance(status, dict):
-        status = status.get("value") or status.get("text") or status.get("label")
-    if not isinstance(status, str) or not status:
-        return False
-    value = re.sub(r"[^a-z0-9]+", "_", status.casefold()).strip("_")
-    for final_word in (
-        "delivered",
-        "completed",
-        "finished",
-        "cancel",
-        "failed",
-        "refunded",
-        "rejected",
-    ):
-        if final_word not in value:
-            continue
-        negated = re.search(
-            rf"(?:^|_)(?:(?:not(?:_(?:yet|currently))?|non)_|un){re.escape(final_word)}",
-            value,
-        )
-        if negated is None:
-            return False
-    return True
 
 
 class WoltApiError(Exception):
@@ -142,6 +95,7 @@ class WoltApi:
         self._token_update_callback = token_update_callback
         self._refresh_lock = asyncio.Lock()
         self._web_client_id = client_id or str(uuid.uuid4())
+        self._details_urls = (ORDER_DETAILS_URL, ORDER_DETAILS_FALLBACK_URL)
 
     @property
     def access_token(self) -> str:
@@ -182,11 +136,13 @@ class WoltApi:
                 else:
                     request = self._session.request(method, url, headers=headers)
                 async with request as response:
-                    if response.status in (401, 403):
+                    if response.status == 401:
                         raise WoltAuthenticationError(
                             "Wolt rejected the supplied credentials",
                             status=response.status,
                         )
+                    # 403 is not treated as bad credentials: bot protection in
+                    # front of Wolt answers 403 too, and must not force reauth.
                     if response.status == 429:
                         delay = retry_seconds(response.headers.get("Retry-After"))
                         self.retry_at = monotonic() + delay
@@ -260,8 +216,8 @@ class WoltApi:
                 url,
                 authenticated=auth,
             )
-        except WoltAuthenticationError as err:
-            if not auth or err.status != 401:
+        except WoltAuthenticationError:
+            if not auth:
                 raise
 
         async with self._refresh_lock:
@@ -281,19 +237,18 @@ class WoltApi:
             raise WoltInvalidPayloadError("Wolt order item is invalid")
         return data["orders"]
 
-    async def fetch_active_orders(self) -> list[dict[str, Any]]:
-        """Fetch only trackable active orders from the account's order page."""
-        return [order for order in await self.fetch_orders() if is_active_order(order)]
-
     async def fetch_order_details(self, purchase_id: str) -> dict[str, Any]:
         """Fetch rich purchase-tracking details for an order."""
         quoted_id = quote(purchase_id, safe="")
+        preferred, alternative = self._details_urls
         try:
-            data = await self._request("GET", ORDER_DETAILS_URL.format(quoted_id))
+            data = await self._request("GET", preferred.format(quoted_id))
         except WoltConnectionError as err:
             if err.status not in (404, 405):
                 raise
-            data = await self._request("GET", ORDER_DETAILS_FALLBACK_URL.format(quoted_id))
+            data = await self._request("GET", alternative.format(quoted_id))
+            # Later polls start from the URL form that answered.
+            self._details_urls = (alternative, preferred)
         if not isinstance(data, dict):
             raise WoltInvalidPayloadError("Wolt order details payload is invalid")
         details = data.get("order_details")

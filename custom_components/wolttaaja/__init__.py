@@ -30,27 +30,28 @@ async def async_setup_entry(hass, entry):
     await coordinator.async_load()
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
-    # Remove only this entry's retired entity, including user-renamed entities.
-    registry = er.async_get(hass)
-    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
-        if (
-            entity.domain == "binary_sensor"
-            and entity.platform == DOMAIN
-            and entity.unique_id == f"{entry.entry_id}_delivery_active"
-        ):
-            registry.async_remove(entity.entity_id)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(async_options_updated))
+    entry.async_on_unload(entry.add_update_listener(async_entry_updated))
     return True
 
 
-async def async_options_updated(hass, entry):
-    # Tokens rotate through entry.data: never reload or poll because of that.
-    coordinator = entry.runtime_data
-    options = dict(entry.options)
-    if getattr(coordinator, "_options", {}) != options:
-        coordinator._options = options
-        await coordinator.async_request_refresh()
+async def async_entry_updated(hass, entry):
+    await entry.runtime_data.async_apply_options()
+
+
+async def async_migrate_entry(hass, entry):
+    if entry.version > 1:
+        return False
+    if entry.minor_version < 2:
+        # v1.0.0 shipped a binary sensor; remove it once, even if the user renamed it.
+        registry = er.async_get(hass)
+        entity_id = registry.async_get_entity_id(
+            "binary_sensor", DOMAIN, f"{entry.entry_id}_delivery_active"
+        )
+        if entity_id:
+            registry.async_remove(entity_id)
+        hass.config_entries.async_update_entry(entry, minor_version=2)
+    return True
 
 
 async def async_unload_entry(hass, entry):

@@ -23,6 +23,7 @@ SCHEMA = vol.Schema(
 
 class WolttaajaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
+    MINOR_VERSION = 2
 
     async def async_step_user(self, user_input=None):
         if self._async_current_entries():

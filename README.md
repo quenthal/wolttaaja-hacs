@@ -36,12 +36,14 @@ phone number, email, or login codes. There is no public Wolt consumer OAuth inte
 
 Credentials are validated on setup. A missing access token triggers refresh; an HTTP 401 triggers
 one refresh and retry. Rotated tokens are saved in the HA config entry. Rejected credentials
-trigger Home Assistant reauthentication. Tokens and API bodies are never logged by this integration.
+trigger Home Assistant reauthentication. HTTP 403 is treated as a temporary connection failure,
+not as bad credentials, because bot protection in front of Wolt also answers 403. Tokens and API bodies are never logged by this integration.
 
 ## Entities
 
 The default entity IDs below assume they are not already occupied; HA can append a suffix.
-All three have permanent unique IDs tied to the config entry.
+All three have permanent unique IDs tied to the config entry. Names and status labels are
+translated (English and Finnish); entity IDs and state values stay the same in every language.
 
 | Entity | State | Attributes |
 | --- | --- | --- |
@@ -58,7 +60,11 @@ when an API failure prevents a reliable complete snapshot, including a failed de
 
 Statuses normalize to `pending`, `preparing`, `ready_for_pickup`, `picked_up`, `on_the_way`,
 `arriving`, `delivered`, `cancelled`, `failed`, or `unknown`. Unknown text is never exposed raw.
-Wolt's order-list telemetry determines which orders remain active. A completed/cancelled order,
+`order_status` is an enum sensor; an unrecognized status shows as HA's `unknown` state while the
+`status` attribute keeps `unknown`. Wolt's order-list telemetry determines which orders remain active.
+An order whose lifecycle cannot be read is ignored (logged once per value) unless it is already
+being tracked; a tracked order that becomes unreadable makes the sensors unavailable instead of
+counting as completed. A completed/cancelled order,
 or one absent from a successful full order-list response, leaves the active snapshot.
 
 Orders retain Wolt purchase IDs: same restaurant, courier or ETA never merges identities.
@@ -76,7 +82,7 @@ order leaves. Arrival notification deduplication is independent of which order i
 ### Upgrading from the four-entity version
 
 The retired `binary_sensor.wolttaaja_delivery_active` is removed from this integration's entity
-registry on successful setup, even if renamed. The three sensor unique IDs remain unchanged.
+registry once, when the config entry is migrated, even if renamed. The three sensor unique IDs remain unchanged.
 Replace binary-sensor conditions with a numeric-state condition on `sensor.wolttaaja_active_orders`
 (`above: 0`). For a template, check `has_value('sensor.wolttaaja_active_orders')` before converting
 the state to a number: unavailable is not the same as zero. Existing notification IDs remain
@@ -94,7 +100,8 @@ Change these under Wolttaaja's **Configure** menu; no reinstallation is needed.
 | ETA notification lead | 5 minutes | 1–15 minutes |
 | Notification grouping window | 3 minutes | 0–10 minutes |
 
-Each successful cycle fetches the order list once and details once per active order, sequentially.
+Each successful cycle fetches the order list once and details once per active order, concurrently.
+The client remembers which of Wolt's two details URL forms answers and starts from it.
 Polling switches between idle and active automatically. HTTP 429 honors numeric and HTTP-date
 `Retry-After` values; invalid/missing headers use 60 seconds. The API client also blocks manual
 refreshes during cooldown, and the coordinator persists the cooldown across restart.
@@ -122,8 +129,10 @@ When an unnotified ETA enters the lead window, an event fires on that poll. Othe
 orders within the grouping window of the anchor ETA join it immediately, even if slightly
 outside the lead window. Groups do not chain transitively. A zero window groups only identical
 ETAs. Several separate groups can fire in one cycle. A newly discovered order still gets its
-own event after a previous group has fired. No ETA means no notification; past/stale ETAs do not
-trigger arrival notifications. A changed ETA does not re-arm an already notified order.
+own event after a previous group has fired. No ETA means no notification. An ETA that already
+passed without a notification (for example a courier ahead of schedule between two polls, or a
+restart) fires late on the next successful poll rather than never. A changed ETA does not re-arm
+an already notified order.
 
 Notification IDs and active list ordering live in Home Assistant `Store`, separate from Recorder. Inactive
 notification IDs expire after 30 days; still-active IDs are retained. Removal of the integration
@@ -198,12 +207,12 @@ IDs in `.storage` should be protected with your HA configuration and backups.
   HA events are not a durable message queue; disabled automations do not receive old events.
 - Storage failure prevents event dispatch. Restoring an old HA backup can restore old dedup state.
 - No live Wolt account or physical phone/TTS delivery was available for validation. Test with
-  real orders before relying on this for time-critical automations. No stable release is implied.
+  real orders before relying on this for time-critical automations.
 
 Run offline tests on Linux with `uv sync --python 3.14`, then `uv run pytest -q`,
 `uv run ruff check .` and `uv run ruff format --check .`. CI also runs Hassfest and HACS validation.
 Tests cover lifecycle, multi-order selection, grouping, restart persistence, API authentication,
-rate limits, config flow, three real HA entities, options and unload.
+rate limits, config flow, three real HA entities, translations, options and unload.
 
 ## Credits and license
 

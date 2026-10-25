@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 from time import monotonic
@@ -16,10 +17,9 @@ from .api import (
     WoltAuthenticationError,
     WoltInvalidPayloadError,
     WoltRateLimitError,
-    is_active_order,
 )
 from .const import DEFAULTS, DOMAIN, EVENT
-from .models import groups, normalize_order_status, project
+from .models import groups, lifecycle, lifecycle_value, order_identity, project
 
 _LOGGER = logging.getLogger(__name__)
 RETENTION = 30 * 86400
@@ -27,21 +27,29 @@ RETENTION = 30 * 86400
 
 class WolttaajaCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry, api):
+        self.options = DEFAULTS | dict(entry.options)
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             config_entry=entry,
-            update_interval=timedelta(seconds=entry.options.get("idle_interval", 300)),
+            update_interval=timedelta(seconds=self.options["idle_interval"]),
             always_update=False,
         )
-        self._options = dict(entry.options)
         self.entry = entry
         self.api = api
         self.store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}")
         self.order_sequence = []
         self.notified = {}
         self._saved = None
+        self._ignored_lifecycles = set()
+
+    async def async_apply_options(self):
+        """Refresh only when options changed; token rotation also updates the entry."""
+        options = DEFAULTS | dict(self.entry.options)
+        if options != self.options:
+            self.options = options
+            await self.async_request_refresh()
 
     async def async_load(self):
         saved = await self.store.async_load()
@@ -64,48 +72,47 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             await self.store.async_save(saved)
             self._saved = saved
 
+    def _active_summaries(self, summaries):
+        """Select active orders; unreadable lifecycle only fails for tracked orders."""
+        active = {}
+        for summary in summaries:
+            state = lifecycle(summary)
+            oid = order_identity(summary)
+            if state == "terminal":
+                continue
+            if state is None:
+                # Not being able to read a tracked order is not evidence it ended.
+                if oid in self.order_sequence:
+                    raise WoltInvalidPayloadError("Unknown lifecycle for a tracked order")
+                self._ignore_unknown(summary)
+                continue
+            if oid is None:
+                raise WoltInvalidPayloadError("Missing order identity")
+            if oid in active:
+                raise WoltInvalidPayloadError("Duplicate order identity")
+            active[oid] = summary
+        return active
+
+    def _ignore_unknown(self, summary):
+        value = str(lifecycle_value(summary)[1])[:40]
+        if value not in self._ignored_lifecycles:
+            self._ignored_lifecycles.add(value)
+            _LOGGER.warning("Ignoring Wolt order with unrecognized lifecycle %s", value)
+
     async def _async_update_data(self):
-        options = DEFAULTS | dict(self.entry.options)
+        options = self.options
         try:
-            summaries = await self.api.fetch_orders()
-            orders = {}
-            for summary in summaries:
-                if "telemetry" in summary or "order_status_type" in summary:
-                    telemetry = summary.get("telemetry")
-                    lifecycle = (
-                        (
-                            telemetry.get("order_status_type")
-                            if isinstance(telemetry, dict)
-                            else None
-                        )
-                        if "telemetry" in summary
-                        else summary.get("order_status_type")
-                    )
-                    if str(lifecycle).upper() not in {
-                        "IN_PROGRESS",
-                        "DELIVERED",
-                        "COMPLETED",
-                        "CANCELLED",
-                        "CANCELED",
-                        "FAILED",
-                        "REJECTED",
-                        "REFUNDED",
-                    }:
-                        raise WoltInvalidPayloadError("Unknown order lifecycle")
-                terminal = normalize_order_status(summary) in {"delivered", "cancelled", "failed"}
-                if not is_active_order(summary) or terminal:
-                    # Missing lifecycle data is not evidence of an idle account.
-                    if not terminal:
-                        raise WoltInvalidPayloadError("Missing order lifecycle")
-                    continue
-                oid = summary.get("purchase_id") or summary.get("order_id") or summary.get("id")
-                if not isinstance(oid, (str, int)) or isinstance(oid, bool) or not str(oid):
-                    raise WoltInvalidPayloadError("Missing order identity")
-                oid = str(oid)
-                if oid in orders:
-                    raise WoltInvalidPayloadError("Duplicate order identity")
-                details = await self.api.fetch_order_details(oid)
-                orders[oid] = project(oid, summary, details)
+            active = self._active_summaries(await self.api.fetch_orders())
+            details = await asyncio.gather(
+                *(self.api.fetch_order_details(oid) for oid in active), return_exceptions=True
+            )
+            for result in details:
+                if isinstance(result, BaseException):
+                    raise result
+            orders = {
+                oid: project(oid, summary, detail)
+                for (oid, summary), detail in zip(active.items(), details, strict=True)
+            }
         except WoltAuthenticationError as err:
             raise ConfigEntryAuthFailed("Wolt authentication failed") from err
         except WoltRateLimitError as err:
