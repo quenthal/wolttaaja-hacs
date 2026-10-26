@@ -2889,7 +2889,7 @@ wheels = [
 
 [[package]]
 name = "wolttaaja-hacs"
-version = "1.2.1"
+version = "2026.10.1"
 source = { virtual = "." }
 
 [package.dev-dependencies]
