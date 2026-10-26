@@ -246,3 +246,6 @@ preserved in [LICENSE](LICENSE) and inside the installed integration.
 The supplied starter prototype informed the original four-entity design. Wolttaaja replaces its in-memory
 selector and patch workflow with an independent integration, persistent notification/list state, synchronized next-delivery sensors, options,
 notifications and tests. It does not depend on Wait for Wolt being installed.
+
+The Wolt name and logo are trademarks of Wolt Enterprises Oy. They are used only to identify
+the service this integration connects to; Wolttaaja is not affiliated with or endorsed by Wolt.
