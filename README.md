@@ -247,5 +247,21 @@ The supplied starter prototype informed the original four-entity design. Wolttaa
 selector and patch workflow with an independent integration, persistent notification/list state, synchronized next-delivery sensors, options,
 notifications and tests. It does not depend on Wait for Wolt being installed.
 
-The Wolt name and logo are trademarks of Wolt Enterprises Oy. They are used only to identify
-the service this integration connects to; Wolttaaja is not affiliated with or endorsed by Wolt.
+## Disclaimer
+
+Wolttaaja is an independent, unofficial community project. It is not affiliated with, endorsed,
+sponsored, maintained or supported by Wolt Enterprises Oy or any of its affiliates. Wolt has no
+involvement in this project and no responsibility for it. Do not contact Wolt support about
+this integration; report problems in this repository's issue tracker instead.
+
+The integration talks to Wolt's private, undocumented web API using credentials from your own
+signed-in browser session. That API can change or stop working at any time without notice. You
+are responsible for how you use your Wolt account, including compliance with Wolt's terms of
+service. Use this integration at your own risk.
+
+"Wolt" and the Wolt logo are trademarks of Wolt Enterprises Oy. They are used here only to
+identify the service this integration connects to, and do not imply any endorsement.
+
+This software is provided "as is", without warranty of any kind, as stated in the
+[MIT License](LICENSE). Do not rely on it for anything where a missed or late notification
+would matter.
