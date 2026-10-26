@@ -37,7 +37,8 @@
           "idle_interval": "Idle polling interval (seconds)",
           "active_interval": "Active polling interval (seconds)",
           "eta_lead": "ETA notification lead (minutes)",
-          "grouping_window": "Notification grouping window (minutes)"
+          "grouping_window": "Notification grouping window (minutes)",
+          "delay_threshold": "ETA delay event threshold (minutes, 0 = off)"
         }
       }
     }

@@ -99,6 +99,7 @@ Change these under Wolttaaja's **Configure** menu; no reinstallation is needed.
 | Active polling interval | 30 seconds | 15–300 seconds |
 | ETA notification lead | 5 minutes | 1–15 minutes |
 | Notification grouping window | 3 minutes | 0–10 minutes |
+| ETA delay event threshold | 10 minutes | 0–60 minutes (0 = off) |
 
 Each successful cycle fetches the order list once and details once per active order, concurrently.
 The client remembers which of Wolt's two details URL forms answers and starts from it.
@@ -132,9 +133,29 @@ ETAs. Several separate groups can fire in one cycle. A newly discovered order st
 own event after a previous group has fired. No ETA means no notification. An ETA that already
 passed without a notification (for example a courier ahead of schedule between two polls, or a
 restart) fires late on the next successful poll rather than never. A changed ETA does not re-arm
-an already notified order.
+an already notified order; see Delay events below.
 
-Notification IDs and active list ordering live in Home Assistant `Store`, separate from Recorder. Inactive
+### Delay events
+
+After an order has been announced, `wolttaaja_delivery_delayed` fires when its ETA moves later
+by at least the delay threshold. The arrival event is not repeated; your automation decides
+whether to react. Later delays are measured from the ETA in the most recent event, so normal
+ETA jitter and a slow drift below the threshold stay quiet. Earlier ETAs never fire. Orders that
+have not been announced yet do not produce delay events.
+
+```yaml
+order_count: 1
+delay_threshold_minutes: 10
+orders:
+  - order_id: "12345"
+    restaurant: "Kotipizza"
+    eta: "2026-10-19T18:42:00+03:00"
+    status: "on_the_way"
+    previous_eta: "2026-10-19T18:30:00+03:00"
+    delay_minutes: 12
+```
+
+Notification IDs, last announced ETAs and active list ordering live in Home Assistant `Store`, separate from Recorder. Inactive
 notification IDs expire after 30 days; still-active IDs are retained. Removal of the integration
 removes its Store. No raw order history is persisted.
 

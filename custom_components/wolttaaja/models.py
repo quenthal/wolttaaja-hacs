@@ -256,3 +256,22 @@ def groups(orders, notified, now, lead, window):
         result.append(group)
         pending = [o for o in pending if o not in group]
     return result
+
+
+def delays(orders, announced, threshold):
+    """Return (order, announced ETA) for ETAs that slipped past the threshold.
+
+    ``announced`` maps order IDs to the ISO ETA last told to the user; a
+    threshold of zero disables delay events.
+    """
+    if not threshold:
+        return []
+    result = []
+    for order in orders.values():
+        previous = announced.get(order.order_id)
+        if order.eta is None or previous is None:
+            continue
+        previous = datetime.fromisoformat(previous)
+        if order.eta - previous >= timedelta(minutes=threshold):
+            result.append((order, previous))
+    return result

@@ -1,14 +1,22 @@
 """Wolttaaja constants."""
 
 DOMAIN = "wolttaaja"
-DEFAULTS = {"idle_interval": 300, "active_interval": 30, "eta_lead": 5, "grouping_window": 3}
+DEFAULTS = {
+    "idle_interval": 300,
+    "active_interval": 30,
+    "eta_lead": 5,
+    "grouping_window": 3,
+    "delay_threshold": 10,
+}
 LIMITS = {
     "idle_interval": (60, 1800),
     "active_interval": (15, 300),
     "eta_lead": (1, 15),
     "grouping_window": (0, 10),
+    "delay_threshold": (0, 60),
 }
 EVENT = "wolttaaja_delivery_approaching"
+DELAYED_EVENT = "wolttaaja_delivery_delayed"
 
 REFRESH_URL = "https://authentication.wolt.com/v1/wauth2/access_token"
 # Updated endpoints based on the current Wolt web client
