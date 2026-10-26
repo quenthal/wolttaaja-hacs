@@ -19,6 +19,10 @@ Without a GitHub release, HACS installs the default branch. This repository uses
 to `/config/custom_components/wolttaaja`, then restart. This is a separate integration from
 Wait for Wolt; disable the old integration to avoid duplicate Wolt polling.
 
+Releases use calendar versioning, `YEAR.MONTH.N`: `2026.10.1` is the first release of
+October 2026, `2026.10.2` the second. Versions up to `1.2.1` used semantic versioning; HACS
+orders the new scheme after them.
+
 ## Credentials
 
 Following [selfish's authentication documentation](https://github.com/selfish/ha-wait-for-wolt#authentication):

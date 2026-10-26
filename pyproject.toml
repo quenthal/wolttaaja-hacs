@@ -1,6 +1,6 @@
 [project]
 name = "wolttaaja-hacs"
-version = "1.2.1"
+version = "2026.10.1"
 requires-python = ">=3.14.2"
 dependencies = []
 
