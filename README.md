@@ -222,6 +222,32 @@ Merge this with your existing Recorder configuration. Automations, traces, notif
 and other event consumers may store event data. Credentials in HA config entries and opaque order
 IDs in `.storage` should be protected with your HA configuration and backups.
 
+## Diagnostics
+
+Wolt's tracking data is undocumented, so status mapping is learned from real orders. Wolttaaja
+records a status timeline for the five most recent orders, including completed ones, and keeps
+it in Home Assistant's `.storage` so it survives restarts. A new event is added whenever the
+normalized status, the ETA or any status-, time- or courier-related field changes (up to 200
+events per order). Each event has:
+
+- `at`: minutes since the order was first seen, and `clock`: local time of day, to compare
+  with what Wolt's app showed at that moment;
+- `status` and `eta` as the sensors showed them;
+- `signals`: every status-like field (status, state, stage, phase, step, type, method, mode),
+  every time-like field as minutes since first seen, ETA ranges, the ETA by source (courier,
+  details, order list) and the courier flags.
+
+Each timeline also lists the key layout of Wolt's payload, without values.
+
+To get it: **Settings → Devices & services → Wolttaaja → ⋮ → Download diagnostics.** To follow an
+order live, use **Enable debug logging** on the same page: each new event is logged as
+`Status trace …`, and disabling debug logging downloads the log.
+
+Only enum-like values and numbers are kept; free text is reduced to its length. Order IDs
+(replaced by `order 1`, `order 2`), venue names, addresses, items, courier names, coordinates,
+dates and credentials are never included. Unrecognized statuses are also logged once as a
+warning.
+
 ## Limitations and validation
 
 - Wolt's private API can change or omit ETA/status data; this is not endorsed by Wolt.

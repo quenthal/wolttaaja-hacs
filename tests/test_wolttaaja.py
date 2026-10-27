@@ -1,5 +1,6 @@
 """Behavioral tests using actual Home Assistant infrastructure."""
 
+import re
 from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -597,3 +598,105 @@ async def test_delay_events_can_be_disabled(hass):
         await c._async_update_data()
     await hass.async_block_till_done()
     assert delayed == []
+
+
+PRIVATE = {
+    "purchase_id": "a",
+    "telemetry": {"order_status_type": "IN_PROGRESS"},
+    "venue": {"name": "Secret Venue"},
+    "delivery_location": {"address": "Secret Street 1", "coordinates": [24.9, 60.1]},
+}
+
+
+def private_details(status, **extra):
+    return {
+        "status": status,
+        "status_text": "Courier Secretname is on the way",
+        "payment_method_id": "secret-payment-id",
+        "items": {"secret-item-id": {"name": "Secret dish", "state": "ok"}},
+        "_drivers": [
+            {"delivering_your_order": True, "name": "Secretname", "location": [60.2, 24.8]}
+        ],
+        **extra,
+    }
+
+
+async def test_diagnostics_timeline_is_private_and_outlives_the_order(hass):
+    from custom_components.wolttaaja.diagnostics import async_get_config_entry_diagnostics
+
+    api = api_for()
+    api.fetch_orders.return_value = [PRIVATE]
+    api.fetch_order_details.return_value = private_details("ready")
+    entry = MockConfigEntry(domain="wolttaaja", data=DATA, minor_version=2)
+    entry.add_to_hass(hass)
+    with patch("custom_components.wolttaaja.WoltApi", return_value=api):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        c = entry.runtime_data
+        await c.async_refresh()  # Unchanged signals add no event.
+        api.fetch_order_details.return_value = private_details(
+            "ready",
+            delivery_status="courier_en_route",
+            delivery_eta=(dt_util.utcnow() + timedelta(minutes=20)).isoformat(),
+            eta_range={"min": 5, "max": 15},
+        )
+        await c.async_refresh()
+        api.fetch_orders.return_value = [
+            {"purchase_id": "a", "telemetry": {"order_status_type": "DELIVERED"}}
+        ]
+        await c.async_refresh()
+        result = await async_get_config_entry_diagnostics(hass, entry)
+        await hass.config_entries.async_unload(entry.entry_id)
+
+    text = str(result)
+    for secret in ("Secret", "secret", "24.9", "60.2", "'a'", "test-refresh", "test-access"):
+        assert secret not in text
+    assert result["active_orders"] == []
+    [timeline] = result["status_timelines"]
+    assert timeline["label"] == "order 1"
+    events = timeline["events"]
+    assert [e["status"] for e in events] == ["ready_for_pickup", "ready_for_pickup"]
+    assert events[0]["signals"]["details.status"] == "ready"
+    assert events[0]["signals"]["details.status_text"] == "<text 32>"
+    assert events[0]["signals"]["drivers.delivering_your_order"] == [True]
+    assert "details.payment_method_id" not in events[0]["signals"]
+    assert events[1]["signals"]["details.delivery_status"] == "courier_en_route"
+    assert events[0]["at"] == "t+0.0 min"
+    assert events[1]["eta"] == events[1]["signals"]["eta_source.details"]
+    assert events[1]["eta"].startswith(("t+19.", "t+20."))
+    assert events[1]["signals"]["details.eta_range.min"] == 5
+    assert events[1]["signals"]["details.eta_range.max"] == 15
+    assert re.search(r"\d{4}-\d{2}-\d{2}", str(result["status_timelines"])) is None
+    assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", events[0]["clock"])
+    assert "details.items.<key>.state" in timeline["paths"]
+
+
+async def test_unknown_status_is_logged_once(hass, caplog):
+    api = api_for(["a"])
+    api.fetch_order_details.return_value = {"status": "Brand New Phase"}
+    c = await coordinator(hass, api)
+    for _ in range(2):
+        data = await c._async_update_data()
+    assert data["a"].status == "unknown"
+    assert caplog.text.count("Unrecognized Wolt order status brand_new_phase") == 1
+
+
+async def test_trace_survives_restart_and_logs_changes(hass, caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="custom_components.wolttaaja")
+    api = api_for(["a"])
+    api.fetch_order_details.return_value = {"status": "production"}
+    c = await coordinator(hass, api)
+    await c._async_update_data()
+    await c._async_update_data()  # Unchanged: no new event, no log line.
+    assert caplog.text.count("Status trace") == 1
+    await c.trace_store.async_save(c.trace.to_storage())
+
+    restored = WolttaajaCoordinator(hass, c.entry, api)
+    await restored.async_load()
+    api.fetch_order_details.return_value = {"status": "ready"}
+    await restored._async_update_data()
+    [timeline] = restored.trace.as_dict()
+    assert timeline["label"] == "order 1"
+    assert [e["status"] for e in timeline["events"]] == ["preparing", "ready_for_pickup"]

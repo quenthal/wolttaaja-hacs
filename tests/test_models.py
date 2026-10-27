@@ -75,3 +75,11 @@ def test_legacy_tracking_link_is_active_unless_status_is_final() -> None:
 def test_legacy_status_text_respects_negation(status: str, expected: str) -> None:
     """Do not drop telemetry-less active orders because a final word is negated."""
     assert lifecycle({"status": {"value": status}}) == expected
+
+
+def test_observed_acknowledged_status_is_pending() -> None:
+    """Observed Wolt payloads report "acknowledged" before "production"."""
+    from custom_components.wolttaaja.models import normalize_order_status
+
+    order = {"telemetry": {"order_status_type": "IN_PROGRESS"}, "status": "acknowledged"}
+    assert normalize_order_status(order) == "pending"

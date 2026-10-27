@@ -19,7 +19,16 @@ from .api import (
     WoltRateLimitError,
 )
 from .const import DEFAULTS, DELAYED_EVENT, DOMAIN, EVENT
-from .models import delays, groups, lifecycle, lifecycle_value, order_identity, project
+from .models import (
+    delays,
+    groups,
+    lifecycle,
+    lifecycle_value,
+    order_identity,
+    project,
+    raw_status_label,
+)
+from .trace import StatusTrace
 
 _LOGGER = logging.getLogger(__name__)
 RETENTION = 30 * 86400
@@ -45,6 +54,9 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         self.announced = {}
         self._saved = None
         self._ignored_lifecycles = set()
+        self._unknown_statuses = set()
+        self.trace = StatusTrace()
+        self.trace_store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.trace")
 
     async def async_apply_options(self):
         """Refresh only when options changed; token rotation also updates the entry."""
@@ -54,6 +66,7 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             await self.async_request_refresh()
 
     async def async_load(self):
+        self.trace.load(await self.trace_store.async_load())
         saved = await self.store.async_load()
         if saved:
             self.order_sequence = saved.get("order_sequence", [])
@@ -103,6 +116,11 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             self._ignored_lifecycles.add(value)
             _LOGGER.warning("Ignoring Wolt order with unrecognized lifecycle %s", value)
 
+    def _log_unknown_status(self, label):
+        if label not in self._unknown_statuses:
+            self._unknown_statuses.add(label)
+            _LOGGER.warning("Unrecognized Wolt order status %s; shown as unknown", label)
+
     async def _async_update_data(self):
         options = self.options
         try:
@@ -113,10 +131,11 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             for result in details:
                 if isinstance(result, BaseException):
                     raise result
-            orders = {
-                oid: project(oid, summary, detail)
+            sources = {
+                oid: (summary, detail)
                 for (oid, summary), detail in zip(active.items(), details, strict=True)
             }
+            orders = {oid: project(oid, *source) for oid, source in sources.items()}
         except WoltAuthenticationError as err:
             raise ConfigEntryAuthFailed("Wolt authentication failed") from err
         except WoltRateLimitError as err:
@@ -129,6 +148,12 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             raise UpdateFailed("Unable to update Wolt orders") from err
 
         now = dt_util.utcnow()
+        for oid, order in orders.items():
+            if event := self.trace.record(oid, now, order, *sources[oid]):
+                _LOGGER.debug("Status trace %s", event)
+                self.trace_store.async_delay_save(self.trace.to_storage, 10)
+            if order.status == "unknown":
+                self._log_unknown_status(raw_status_label(*sources[oid]))
         # Keep first-seen order across ETA changes, API response reordering and restarts.
         # Only active IDs persist. New IDs from the same poll use response order.
         sequence = [oid for oid in self.order_sequence if oid in orders]

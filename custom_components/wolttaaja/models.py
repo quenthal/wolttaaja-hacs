@@ -130,7 +130,15 @@ def normalize_order_status(order: dict[str, Any]) -> str:
     if _contains_non_negated_status(value, "prepar", "production", "restaurant"):
         return "preparing"
     if _contains_non_negated_status(
-        value, "pending", "received", "created", "in_progress", "accepted"
+        # "acknowledged" (venue saw it, not yet confirmed) appears in observed
+        # Wolt payloads before "production".
+        value,
+        "pending",
+        "received",
+        "created",
+        "in_progress",
+        "accepted",
+        "acknowledged",
     ):
         return "pending"
     if _contains_non_negated_status(
@@ -205,24 +213,43 @@ class Order:
         }
 
 
-def project(order_id, summary, details):
-    """Project only allowlisted fields and prefer assigned courier ETA."""
-    drivers = [d for d in details.get("_drivers", []) if isinstance(d, dict)]
-    driver = next((d for d in drivers if d.get("delivering_your_order") is True), {})
-    if not driver and len(drivers) == 1 and drivers[0].get("delivering_your_order") is not False:
-        driver = drivers[0]
+def _status_source(summary, details):
     merged = {**summary, **details}
     # The orders endpoint remains authoritative for lifecycle.
     for key in ("telemetry", "order_status_type"):
         if key in summary:
             merged[key] = summary[key]
+    return merged
+
+
+def raw_status_label(summary, details):
+    """Return the unmapped status as a short, sanitized label for logging."""
+    raw = _raw_status(_status_source(summary, details))
+    return re.sub(r"[^a-z0-9]+", "_", raw.casefold()).strip("_")[:40] if raw else None
+
+
+def eta_candidates(summary, details):
+    """ETAs by source, in preference order: assigned courier, details, summary."""
+    drivers = [d for d in details.get("_drivers", []) if isinstance(d, dict)]
+    driver = next((d for d in drivers if d.get("delivering_your_order") is True), {})
+    if not driver and len(drivers) == 1 and drivers[0].get("delivering_your_order") is not False:
+        driver = drivers[0]
+    return {
+        "driver": extract_order_eta(driver),
+        "details": extract_order_eta(details),
+        "summary": extract_order_eta(summary),
+    }
+
+
+def project(order_id, summary, details):
+    """Project only allowlisted fields and prefer assigned courier ETA."""
     return Order(
         order_id,
         venue_name(summary)
         or venue_name(details)
         or venue_name({"venue": {"name": details.get("venue_name")}}),
-        normalize_order_status(merged),
-        extract_order_eta(driver) or extract_order_eta(details) or extract_order_eta(summary),
+        normalize_order_status(_status_source(summary, details)),
+        next((eta for eta in eta_candidates(summary, details).values() if eta), None),
     )
 
 
