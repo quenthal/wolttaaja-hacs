@@ -224,18 +224,29 @@ IDs in `.storage` should be protected with your HA configuration and backups.
 
 ## Diagnostics
 
-Wolt's tracking data is undocumented, so status mapping is learned from real orders. Open
-**Settings → Devices & services → Wolttaaja → ⋮ → Download diagnostics** after an order, while
-Home Assistant has not restarted. The file contains:
+Wolt's tracking data is undocumented, so status mapping is learned from real orders. Wolttaaja
+records a status timeline for the five most recent orders, including completed ones, and keeps
+it in Home Assistant's `.storage` so it survives restarts. A new event is added whenever the
+normalized status, the ETA or any status-, time- or courier-related field changes (up to 200
+events per order). Each event has:
 
-- a status timeline for the three most recent orders, including completed ones: when the
-  normalized status, ETA presence or any status-like field changed;
-- the key layout of Wolt's payload, without values.
+- `at`: minutes since the order was first seen, and `clock`: local time of day, to compare
+  with what Wolt's app showed at that moment;
+- `status` and `eta` as the sensors showed them;
+- `signals`: every status-like field (status, state, stage, phase, step, type, method, mode),
+  every time-like field as minutes since first seen, ETA ranges, the ETA by source (courier,
+  details, order list) and the courier flags.
 
-Only enum-like values of keys named like status, state, stage, phase, step, type, method or mode
-are kept; free text is reduced to its length. Order IDs (replaced by `order 1`, `order 2`),
-venue names, addresses, items, courier names, coordinates and credentials are never included.
-Timelines live in memory only. Unrecognized statuses are also logged once as a warning.
+Each timeline also lists the key layout of Wolt's payload, without values.
+
+To get it: **Settings → Devices & services → Wolttaaja → ⋮ → Download diagnostics.** To follow an
+order live, use **Enable debug logging** on the same page: each new event is logged as
+`Status trace …`, and disabling debug logging downloads the log.
+
+Only enum-like values and numbers are kept; free text is reduced to its length. Order IDs
+(replaced by `order 1`, `order 2`), venue names, addresses, items, courier names, coordinates,
+dates and credentials are never included. Unrecognized statuses are also logged once as a
+warning.
 
 ## Limitations and validation
 

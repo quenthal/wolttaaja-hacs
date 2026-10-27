@@ -666,7 +666,8 @@ async def test_diagnostics_timeline_is_private_and_outlives_the_order(hass):
     assert events[1]["eta"].startswith(("t+19.", "t+20."))
     assert events[1]["signals"]["details.eta_range.min"] == 5
     assert events[1]["signals"]["details.eta_range.max"] == 15
-    assert re.search(r"\d{4}-\d{2}-\d{2}|\d{2}:\d{2}", str(result["status_timelines"])) is None
+    assert re.search(r"\d{4}-\d{2}-\d{2}", str(result["status_timelines"])) is None
+    assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", events[0]["clock"])
     assert "details.items.<key>.state" in timeline["paths"]
 
 
@@ -678,3 +679,24 @@ async def test_unknown_status_is_logged_once(hass, caplog):
         data = await c._async_update_data()
     assert data["a"].status == "unknown"
     assert caplog.text.count("Unrecognized Wolt order status brand_new_phase") == 1
+
+
+async def test_trace_survives_restart_and_logs_changes(hass, caplog):
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="custom_components.wolttaaja")
+    api = api_for(["a"])
+    api.fetch_order_details.return_value = {"status": "production"}
+    c = await coordinator(hass, api)
+    await c._async_update_data()
+    await c._async_update_data()  # Unchanged: no new event, no log line.
+    assert caplog.text.count("Status trace") == 1
+    await c.trace_store.async_save(c.trace.to_storage())
+
+    restored = WolttaajaCoordinator(hass, c.entry, api)
+    await restored.async_load()
+    api.fetch_order_details.return_value = {"status": "ready"}
+    await restored._async_update_data()
+    [timeline] = restored.trace.as_dict()
+    assert timeline["label"] == "order 1"
+    assert [e["status"] for e in timeline["events"]] == ["preparing", "ready_for_pickup"]

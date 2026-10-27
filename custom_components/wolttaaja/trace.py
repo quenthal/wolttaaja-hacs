@@ -3,8 +3,9 @@
 Wolt's tracking payload is undocumented. To learn which fields drive the
 lifecycle without storing personal data, only status-like scalar values are
 kept (by key name), timestamps under time-like keys as minutes since the
-order was first seen, plus the key layout without values. Order IDs, names,
-addresses, items, coordinates and wall-clock times never enter a trace.
+order was first seen, plus the key layout without values. Each event also
+carries the local time of day (no date) for comparison with Wolt's app.
+Order IDs, names, addresses, items and coordinates never enter a trace.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import re
 from collections import OrderedDict
 from datetime import datetime
 from typing import Any
+
+from homeassistant.util import dt as dt_util
 
 from .models import _parse_eta, eta_candidates
 
@@ -26,8 +29,8 @@ SAFE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,39}$")
 TOKEN = re.compile(r"^[A-Za-z0-9_.:+-]{0,60}$")
 MAX_DEPTH = 5
 MAX_PATHS = 300
-MAX_EVENTS = 60
-MAX_ORDERS = 3
+MAX_EVENTS = 200
+MAX_ORDERS = 5
 
 
 def _words(key: str) -> set[str]:
@@ -83,13 +86,30 @@ def snapshot(summary, details, origin) -> tuple[dict, list[str]]:
 
 
 class StatusTrace:
-    """Bounded per-order timelines, kept in memory only."""
+    """Bounded per-order timelines; the integration persists them locally."""
 
     def __init__(self) -> None:
         self._orders: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._labels = 0
 
-    def record(self, oid, now, order, summary, details) -> None:
+    def load(self, data) -> None:
+        if not isinstance(data, dict):
+            return
+        self._labels = data.get("labels", 0)
+        for oid, entry in data.get("orders", {}).items():
+            self._orders[oid] = {**entry, "origin": datetime.fromisoformat(entry["origin"])}
+
+    def to_storage(self) -> dict[str, Any]:
+        return {
+            "labels": self._labels,
+            "orders": {
+                oid: {**entry, "origin": entry["origin"].isoformat()}
+                for oid, entry in self._orders.items()
+            },
+        }
+
+    def record(self, oid, now, order, summary, details) -> dict[str, Any] | None:
+        """Append an event when anything changed; return it for debug logging."""
         entry = self._orders.get(oid)
         if entry is None:
             self._labels += 1
@@ -107,9 +127,16 @@ class StatusTrace:
             "eta": None if eta is None else f"t{eta:+} min",
             "signals": signals,
         }
-        if last is None or {k: last[k] for k in state} != state:
-            entry["events"].append({"at": f"t{_minutes(now, origin):+} min", **state})
-            del entry["events"][:-MAX_EVENTS]
+        if last is not None and {k: last[k] for k in state} == state:
+            return None
+        event = {
+            "at": f"t{_minutes(now, origin):+} min",
+            "clock": dt_util.as_local(now).strftime("%H:%M:%S"),
+            **state,
+        }
+        entry["events"].append(event)
+        del entry["events"][:-MAX_EVENTS]
+        return {"label": entry["label"], **event}
 
     def as_dict(self) -> list[dict[str, Any]]:
         """Times are minutes since the order was first seen (t+0.0 min)."""

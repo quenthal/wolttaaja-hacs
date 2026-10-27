@@ -130,7 +130,15 @@ def normalize_order_status(order: dict[str, Any]) -> str:
     if _contains_non_negated_status(value, "prepar", "production", "restaurant"):
         return "preparing"
     if _contains_non_negated_status(
-        value, "pending", "received", "created", "in_progress", "accepted"
+        # "acknowledged" (venue saw it, not yet confirmed) appears in observed
+        # Wolt payloads before "production".
+        value,
+        "pending",
+        "received",
+        "created",
+        "in_progress",
+        "accepted",
+        "acknowledged",
     ):
         return "pending"
     if _contains_non_negated_status(

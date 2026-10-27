@@ -56,6 +56,7 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         self._ignored_lifecycles = set()
         self._unknown_statuses = set()
         self.trace = StatusTrace()
+        self.trace_store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.trace")
 
     async def async_apply_options(self):
         """Refresh only when options changed; token rotation also updates the entry."""
@@ -65,6 +66,7 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             await self.async_request_refresh()
 
     async def async_load(self):
+        self.trace.load(await self.trace_store.async_load())
         saved = await self.store.async_load()
         if saved:
             self.order_sequence = saved.get("order_sequence", [])
@@ -147,7 +149,9 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
 
         now = dt_util.utcnow()
         for oid, order in orders.items():
-            self.trace.record(oid, now, order, *sources[oid])
+            if event := self.trace.record(oid, now, order, *sources[oid]):
+                _LOGGER.debug("Status trace %s", event)
+                self.trace_store.async_delay_save(self.trace.to_storage, 10)
             if order.status == "unknown":
                 self._log_unknown_status(raw_status_label(*sources[oid]))
         # Keep first-seen order across ETA changes, API response reordering and restarts.
