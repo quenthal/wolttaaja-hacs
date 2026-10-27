@@ -222,6 +222,21 @@ Merge this with your existing Recorder configuration. Automations, traces, notif
 and other event consumers may store event data. Credentials in HA config entries and opaque order
 IDs in `.storage` should be protected with your HA configuration and backups.
 
+## Diagnostics
+
+Wolt's tracking data is undocumented, so status mapping is learned from real orders. Open
+**Settings → Devices & services → Wolttaaja → ⋮ → Download diagnostics** after an order, while
+Home Assistant has not restarted. The file contains:
+
+- a status timeline for the three most recent orders, including completed ones: when the
+  normalized status, ETA presence or any status-like field changed;
+- the key layout of Wolt's payload, without values.
+
+Only enum-like values of keys named like status, state, stage, phase, step, type, method or mode
+are kept; free text is reduced to its length. Order IDs (replaced by `order 1`, `order 2`),
+venue names, addresses, items, courier names, coordinates and credentials are never included.
+Timelines live in memory only. Unrecognized statuses are also logged once as a warning.
+
 ## Limitations and validation
 
 - Wolt's private API can change or omit ETA/status data; this is not endorsed by Wolt.
