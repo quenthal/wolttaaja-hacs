@@ -185,6 +185,7 @@ async def test_three_real_entities_unavailable_options_and_unload(hass):
         assert hass.states.get("sensor.wolttaaja_active_orders").state == "2"
         assert hass.states.get("sensor.wolttaaja_next_delivery").state == "unknown"
         assert hass.states.get("binary_sensor.wolttaaja_delivery_active") is None
+        assert hass.states.get("sensor.wolttaaja_order_status").state == "on_the_way"
         assert len(er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)) == 3
         attrs = hass.states.get("sensor.wolttaaja_active_orders").attributes["orders"]
         assert {o["order_id"] for o in attrs} == {"a", "b"}
@@ -195,6 +196,8 @@ async def test_three_real_entities_unavailable_options_and_unload(hass):
         api.fetch_orders.return_value = []
         await entry.runtime_data.async_refresh()
         assert hass.states.get("sensor.wolttaaja_active_orders").state == "0"
+        assert hass.states.get("sensor.wolttaaja_order_status").state == "no_order"
+        assert hass.states.get("sensor.wolttaaja_next_delivery").state == "unknown"
         hass.config_entries.async_update_entry(entry, options={"idle_interval": 600})
         await hass.async_block_till_done()
         assert entry.runtime_data.update_interval.total_seconds() == 600
@@ -392,7 +395,8 @@ async def test_three_order_selection_list_order_restart_and_completion(hass):
             )
             assert status.state == status.attributes["status"]
         else:
-            assert eta.state == status.state == "unknown"
+            assert eta.state == "unknown"
+            assert status.state == "no_order"
 
     with patch("custom_components.wolttaaja.WoltApi", return_value=api):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -469,6 +473,7 @@ async def test_finnish_names_keep_english_entity_ids(hass):
         assert status.state == "preparing"
         assert status.attributes["friendly_name"] == "Wolttaaja Tilauksen tila"
         assert "ready_for_pickup" in status.attributes["options"]
+        assert status.attributes["options"][0] == "no_order"
         assert hass.states.get("sensor.wolttaaja_next_delivery") is not None
         assert hass.states.get("sensor.wolttaaja_active_orders").state == "1"
         await hass.config_entries.async_unload(entry.entry_id)
@@ -700,3 +705,32 @@ async def test_trace_survives_restart_and_logs_changes(hass, caplog):
     [timeline] = restored.trace.as_dict()
     assert timeline["label"] == "order 1"
     assert [e["status"] for e in timeline["events"]] == ["preparing", "ready_for_pickup"]
+
+
+@pytest.mark.parametrize(
+    "error,step,expected",
+    [
+        (
+            WoltConnectionError("Wolt request failed with status 503", status=503),
+            "orders",
+            "WoltConnectionError on order list: Wolt request failed with status 503",
+        ),
+        (TimeoutError(), "details", "Unable to connect to Wolt (caused by TimeoutError)"),
+    ],
+)
+async def test_update_failure_says_what_failed(hass, error, step, expected):
+    api = api_for(["purchase-secret"])
+    if isinstance(error, WoltConnectionError):
+        api.fetch_orders.side_effect = error
+    else:
+        cause = error
+        try:
+            raise WoltConnectionError("Unable to connect to Wolt") from cause
+        except WoltConnectionError as wrapped:
+            api.fetch_order_details.side_effect = wrapped
+    c = await coordinator(hass, api)
+    with pytest.raises(UpdateFailed) as exc:
+        await c._async_update_data()
+    assert expected in str(exc.value)
+    assert ("on order details" in str(exc.value)) == (step == "details")
+    assert "purchase-secret" not in str(exc.value)

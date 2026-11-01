@@ -34,6 +34,14 @@ _LOGGER = logging.getLogger(__name__)
 RETENTION = 30 * 86400
 
 
+def describe(err, step):
+    """Say what failed without response bodies; a cause's text can hold an order URL."""
+    text = f"{type(err).__name__} on {step}: {err}"
+    if err.__cause__ is not None:
+        text += f" (caused by {type(err.__cause__).__name__})"
+    return text
+
+
 class WolttaajaCoordinator(DataUpdateCoordinator):
     def __init__(self, hass, entry, api):
         self.options = DEFAULTS | dict(entry.options)
@@ -123,8 +131,10 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         options = self.options
+        step = "order list"
         try:
             active = self._active_summaries(await self.api.fetch_orders())
+            step = "order details"
             details = await asyncio.gather(
                 *(self.api.fetch_order_details(oid) for oid in active), return_exceptions=True
             )
@@ -145,7 +155,7 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             await self._save(self.order_sequence, self.notified, self.announced)
             raise UpdateFailed("Wolt rate limit reached; waiting before retry") from err
         except WoltApiError as err:
-            raise UpdateFailed("Unable to update Wolt orders") from err
+            raise UpdateFailed(f"Unable to update Wolt orders: {describe(err, step)}") from err
 
         now = dt_util.utcnow()
         for oid, order in orders.items():

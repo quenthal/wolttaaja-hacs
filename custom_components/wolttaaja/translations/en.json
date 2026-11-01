@@ -51,6 +51,7 @@
       "order_status": {
         "name": "Order status",
         "state": {
+          "no_order": "No order",
           "pending": "Pending",
           "preparing": "Preparing",
           "ready_for_pickup": "Ready for pickup",

@@ -52,20 +52,32 @@ translated (English and Finnish); entity IDs and state values stay the same in e
 | Entity | State | Attributes |
 | --- | --- | --- |
 | `sensor.wolttaaja_next_delivery` | Earliest active ETA, timestamp | `order_id`, `restaurant`, `status`, `eta` |
-| `sensor.wolttaaja_order_status` | Status of the earliest-ETA order | `order_id`, `restaurant`, `status`, `eta` |
+| `sensor.wolttaaja_order_status` | Status of the earliest-ETA order, or `no_order` | `order_id`, `restaurant`, `status`, `eta` |
 | `sensor.wolttaaja_active_orders` | Integer count | `orders`: list of the four fields above |
 
 `next_delivery` and `order_status` always select the same order from the same coordinator
 snapshot: the earliest known ETA. They switch together when ETA ordering changes, including
 all four order attributes. Equal ETAs use stable ID order. Missing ETAs sort last; if all are
 missing, stable ID selects the order and its restaurant/status while the timestamp is unknown.
-With no orders, both sensors are unknown and the count is zero. All sensors become unavailable
-when an API failure prevents a reliable complete snapshot, including a failed details request.
+With no orders, `order_status` is `no_order`, `next_delivery` is unknown (a timestamp sensor
+cannot hold text) and the count is zero. All sensors become unavailable when an API failure
+prevents a reliable complete snapshot, including a failed details request.
+
+**No orders vs. no data:** `order_status` = `no_order` ("No order", "Ei tilausta") with
+`active_orders` at `0` means Wolt answered and there is nothing to track. `unavailable` on all
+three sensors means the last update failed, so the integration does not know. `order_status` shows
+`unknown` only while an order is active and Wolt reports a status the integration does not
+recognize. For automations, `order_status` not being `no_order` or `active_orders` above `0` both
+mean an order is in progress. On a dashboard, a conditional card on `active_orders` can hide
+`next_delivery` while it has no value. When an update fails, Home Assistant logs one error per outage,
+for example `Unable to update Wolt orders: WoltConnectionError on order list: Wolt request failed
+with status 503`, and an info line when it recovers. The message names the failed request and the
+error type, never response contents.
 
 Statuses normalize to `pending`, `preparing`, `ready_for_pickup`, `picked_up`, `on_the_way`,
 `arriving`, `delivered`, `cancelled`, `failed`, or `unknown`. Unknown text is never exposed raw.
-`order_status` is an enum sensor; an unrecognized status shows as HA's `unknown` state while the
-`status` attribute keeps `unknown`. Wolt's order-list telemetry determines which orders remain active.
+`order_status` is an enum sensor with these values plus `no_order`; an unrecognized status shows
+as HA's `unknown` state while the `status` attribute keeps `unknown`. Wolt's order-list telemetry determines which orders remain active.
 An order whose lifecycle cannot be read is ignored (logged once per value) unless it is already
 being tracked; a tracked order that becomes unreadable makes the sensors unavailable instead of
 counting as completed. A completed/cancelled order,

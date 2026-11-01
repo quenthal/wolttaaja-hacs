@@ -5,6 +5,8 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from .entity import WolttaajaEntity
 from .models import STATUSES, choose
 
+NO_ORDER = "no_order"
+
 
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(
@@ -22,7 +24,7 @@ class WolttaajaSensor(WolttaajaEntity, SensorEntity):
             self._attr_device_class = SensorDeviceClass.TIMESTAMP
         elif kind == "order_status":
             self._attr_device_class = SensorDeviceClass.ENUM
-            self._attr_options = list(STATUSES)
+            self._attr_options = [NO_ORDER, *STATUSES]
         self._attr_icon = "mdi:moped"
 
     @property
@@ -35,10 +37,11 @@ class WolttaajaSensor(WolttaajaEntity, SensorEntity):
         if self.kind == "active_orders":
             return len(self.coordinator.data or {})
         order = self.selected
-        if not order:
-            return None
         if self.kind == "next_delivery":
-            return order.eta
+            return order.eta if order else None
+        if not order:
+            # A successful update with nothing to track; failures are unavailable.
+            return NO_ORDER
         # HA renders a missing enum value as the same "unknown" state.
         return order.status if order.status in STATUSES else None
 
