@@ -700,3 +700,32 @@ async def test_trace_survives_restart_and_logs_changes(hass, caplog):
     [timeline] = restored.trace.as_dict()
     assert timeline["label"] == "order 1"
     assert [e["status"] for e in timeline["events"]] == ["preparing", "ready_for_pickup"]
+
+
+@pytest.mark.parametrize(
+    "error,step,expected",
+    [
+        (
+            WoltConnectionError("Wolt request failed with status 503", status=503),
+            "orders",
+            "WoltConnectionError on order list: Wolt request failed with status 503",
+        ),
+        (TimeoutError(), "details", "Unable to connect to Wolt (caused by TimeoutError)"),
+    ],
+)
+async def test_update_failure_says_what_failed(hass, error, step, expected):
+    api = api_for(["purchase-secret"])
+    if isinstance(error, WoltConnectionError):
+        api.fetch_orders.side_effect = error
+    else:
+        cause = error
+        try:
+            raise WoltConnectionError("Unable to connect to Wolt") from cause
+        except WoltConnectionError as wrapped:
+            api.fetch_order_details.side_effect = wrapped
+    c = await coordinator(hass, api)
+    with pytest.raises(UpdateFailed) as exc:
+        await c._async_update_data()
+    assert expected in str(exc.value)
+    assert ("on order details" in str(exc.value)) == (step == "details")
+    assert "purchase-secret" not in str(exc.value)

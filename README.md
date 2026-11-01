@@ -62,6 +62,14 @@ missing, stable ID selects the order and its restaurant/status while the timesta
 With no orders, both sensors are unknown and the count is zero. All sensors become unavailable
 when an API failure prevents a reliable complete snapshot, including a failed details request.
 
+**No orders vs. no data:** `unknown` with `active_orders` at `0` means Wolt answered and there is
+nothing to track. `unavailable` on all three sensors means the last update failed, so the
+integration does not know. Automations should check `active_orders` (or `has_value`) rather than
+treating `unknown` as an error. When an update fails, Home Assistant logs one error per outage,
+for example `Unable to update Wolt orders: WoltConnectionError on order list: Wolt request failed
+with status 503`, and an info line when it recovers. The message names the failed request and the
+error type, never response contents.
+
 Statuses normalize to `pending`, `preparing`, `ready_for_pickup`, `picked_up`, `on_the_way`,
 `arriving`, `delivered`, `cancelled`, `failed`, or `unknown`. Unknown text is never exposed raw.
 `order_status` is an enum sensor; an unrecognized status shows as HA's `unknown` state while the
