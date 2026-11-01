@@ -51,6 +51,7 @@
       "order_status": {
         "name": "Tilauksen tila",
         "state": {
+          "no_order": "Ei tilausta",
           "pending": "Odottaa",
           "preparing": "Valmistetaan",
           "ready_for_pickup": "Valmis noudettavaksi",

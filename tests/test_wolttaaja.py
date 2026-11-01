@@ -185,6 +185,7 @@ async def test_three_real_entities_unavailable_options_and_unload(hass):
         assert hass.states.get("sensor.wolttaaja_active_orders").state == "2"
         assert hass.states.get("sensor.wolttaaja_next_delivery").state == "unknown"
         assert hass.states.get("binary_sensor.wolttaaja_delivery_active") is None
+        assert hass.states.get("sensor.wolttaaja_order_status").state == "on_the_way"
         assert len(er.async_entries_for_config_entry(er.async_get(hass), entry.entry_id)) == 3
         attrs = hass.states.get("sensor.wolttaaja_active_orders").attributes["orders"]
         assert {o["order_id"] for o in attrs} == {"a", "b"}
@@ -195,6 +196,8 @@ async def test_three_real_entities_unavailable_options_and_unload(hass):
         api.fetch_orders.return_value = []
         await entry.runtime_data.async_refresh()
         assert hass.states.get("sensor.wolttaaja_active_orders").state == "0"
+        assert hass.states.get("sensor.wolttaaja_order_status").state == "no_order"
+        assert hass.states.get("sensor.wolttaaja_next_delivery").state == "unknown"
         hass.config_entries.async_update_entry(entry, options={"idle_interval": 600})
         await hass.async_block_till_done()
         assert entry.runtime_data.update_interval.total_seconds() == 600
@@ -392,7 +395,8 @@ async def test_three_order_selection_list_order_restart_and_completion(hass):
             )
             assert status.state == status.attributes["status"]
         else:
-            assert eta.state == status.state == "unknown"
+            assert eta.state == "unknown"
+            assert status.state == "no_order"
 
     with patch("custom_components.wolttaaja.WoltApi", return_value=api):
         assert await hass.config_entries.async_setup(entry.entry_id)
@@ -469,6 +473,7 @@ async def test_finnish_names_keep_english_entity_ids(hass):
         assert status.state == "preparing"
         assert status.attributes["friendly_name"] == "Wolttaaja Tilauksen tila"
         assert "ready_for_pickup" in status.attributes["options"]
+        assert status.attributes["options"][0] == "no_order"
         assert hass.states.get("sensor.wolttaaja_next_delivery") is not None
         assert hass.states.get("sensor.wolttaaja_active_orders").state == "1"
         await hass.config_entries.async_unload(entry.entry_id)
