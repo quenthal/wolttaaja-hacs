@@ -46,10 +46,10 @@
   "entity": {
     "sensor": {
       "next_delivery": {
-        "name": "Seuraava toimitus"
+        "name": "Toimitusaika"
       },
       "order_status": {
-        "name": "Tilauksen tila",
+        "name": "Tila",
         "state": {
           "no_order": "Ei tilausta",
           "pending": "Odottaa",
@@ -64,7 +64,7 @@
         }
       },
       "active_orders": {
-        "name": "Aktiiviset tilaukset"
+        "name": "Tilaukset"
       }
     }
   }

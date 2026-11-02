@@ -48,6 +48,8 @@ not as bad credentials, because bot protection in front of Wolt also answers 403
 The default entity IDs below assume they are not already occupied; HA can append a suffix.
 All three have permanent unique IDs tied to the config entry. Names and status labels are
 translated (English and Finnish); entity IDs and state values stay the same in every language.
+On the device they are shown as **Delivery time**, **Status** and **Orders** (*Toimitusaika*,
+*Tila*, *Tilaukset*).
 
 | Entity | State | Attributes |
 | --- | --- | --- |

@@ -471,11 +471,17 @@ async def test_finnish_names_keep_english_entity_ids(hass):
         await hass.async_block_till_done()
         status = hass.states.get("sensor.wolttaaja_order_status")
         assert status.state == "preparing"
-        assert status.attributes["friendly_name"] == "Wolttaaja Tilauksen tila"
+        assert status.attributes["friendly_name"] == "Wolttaaja Tila"
+        assert (
+            hass.states.get("sensor.wolttaaja_next_delivery").attributes["friendly_name"]
+            == "Wolttaaja Toimitusaika"
+        )
         assert "ready_for_pickup" in status.attributes["options"]
         assert status.attributes["options"][0] == "no_order"
         assert hass.states.get("sensor.wolttaaja_next_delivery") is not None
-        assert hass.states.get("sensor.wolttaaja_active_orders").state == "1"
+        orders = hass.states.get("sensor.wolttaaja_active_orders")
+        assert orders.state == "1"
+        assert orders.attributes["friendly_name"] == "Wolttaaja Tilaukset"
         await hass.config_entries.async_unload(entry.entry_id)
 
 

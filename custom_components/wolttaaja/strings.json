@@ -46,10 +46,10 @@
   "entity": {
     "sensor": {
       "next_delivery": {
-        "name": "Next delivery"
+        "name": "Delivery time"
       },
       "order_status": {
-        "name": "Order status",
+        "name": "Status",
         "state": {
           "no_order": "No order",
           "pending": "Pending",
@@ -64,7 +64,7 @@
         }
       },
       "active_orders": {
-        "name": "Active orders"
+        "name": "Orders"
       }
     }
   }
