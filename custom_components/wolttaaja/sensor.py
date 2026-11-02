@@ -3,9 +3,11 @@
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 
 from .entity import WolttaajaEntity
-from .models import STATUSES, choose
+from .models import STATUSES
 
 NO_ORDER = "no_order"
+# Only vehicle values seen in Wolt data get their own icon.
+VEHICLE_ICONS = {"bicycle": "mdi:bicycle", "car": "mdi:car"}
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -25,12 +27,17 @@ class WolttaajaSensor(WolttaajaEntity, SensorEntity):
         elif kind == "order_status":
             self._attr_device_class = SensorDeviceClass.ENUM
             self._attr_options = [NO_ORDER, *STATUSES]
-        self._attr_icon = "mdi:moped"
 
     @property
     def selected(self):
-        orders = self.coordinator.data or {}
-        return orders.get(choose(orders))
+        return (self.coordinator.data or {}).get(self.coordinator.selected)
+
+    @property
+    def icon(self):
+        if self.kind == "active_orders":
+            return "mdi:food"
+        order = self.selected
+        return VEHICLE_ICONS.get(order.vehicle if order else None, "mdi:moped")
 
     @property
     def native_value(self):
@@ -52,5 +59,7 @@ class WolttaajaSensor(WolttaajaEntity, SensorEntity):
         return (
             self.selected.as_dict()
             if self.selected
-            else {"order_id": None, "restaurant": None, "status": None, "eta": None}
+            else dict.fromkeys(
+                ("order_id", "restaurant", "status", "eta", "vehicle", "eta_min", "eta_max")
+            )
         )

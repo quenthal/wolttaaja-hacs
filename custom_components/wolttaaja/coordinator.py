@@ -20,6 +20,7 @@ from .api import (
 )
 from .const import DEFAULTS, DELAYED_EVENT, DOMAIN, EVENT
 from .models import (
+    choose,
     delays,
     groups,
     lifecycle,
@@ -63,6 +64,7 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         self._saved = None
         self._ignored_lifecycles = set()
         self._unknown_statuses = set()
+        self.selected = None
         self.trace = StatusTrace()
         self.trace_store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.trace")
 
@@ -229,4 +231,5 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         self.update_interval = timedelta(
             seconds=options["active_interval"] if orders else options["idle_interval"]
         )
+        self.selected = choose(orders, self.selected)
         return orders
