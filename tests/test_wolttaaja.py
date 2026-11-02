@@ -625,6 +625,9 @@ def private_details(status, **extra):
         "status_text": "Courier Secretname is on the way",
         "payment_method_id": "secret-payment-id",
         "items": {"secret-item-id": {"name": "Secret dish", "state": "ok"}},
+        "tip_config": {"min_amount": 50, "max_amount": 987654},
+        "payment_method": {"type": "secretpay"},
+        "delivery_location": {"coordinates": {"type": "Point", "coordinates": [24.9, 60.1]}},
         "_drivers": [
             {"delivering_your_order": True, "name": "Secretname", "location": [60.2, 24.8]}
         ],
@@ -665,8 +668,11 @@ async def test_diagnostics_timeline_is_private_and_outlives_the_order(hass):
     assert result["active_orders"] == []
     [timeline] = result["status_timelines"]
     assert timeline["label"] == "order 1"
-    events = timeline["events"]
+    *events, left = timeline["events"]
     assert [e["status"] for e in events] == ["ready_for_pickup", "ready_for_pickup"]
+    assert left["left"] == "DELIVERED" and "status" not in left
+    for secret in ("987654", "secretpay", "Point"):
+        assert secret not in text
     assert events[0]["signals"]["details.status"] == "ready"
     assert events[0]["signals"]["details.status_text"] == "<text 32>"
     assert events[0]["signals"]["drivers.delivering_your_order"] == [True]
@@ -680,6 +686,7 @@ async def test_diagnostics_timeline_is_private_and_outlives_the_order(hass):
     assert re.search(r"\d{4}-\d{2}-\d{2}", str(result["status_timelines"])) is None
     assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", events[0]["clock"])
     assert "details.items.<key>.state" in timeline["paths"]
+    assert "details.items.<key>.state" not in events[0]["signals"]
 
 
 async def test_unknown_status_is_logged_once(hass, caplog):
