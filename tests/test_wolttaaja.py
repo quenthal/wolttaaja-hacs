@@ -237,7 +237,15 @@ def test_projection_privacy():
     result = project(
         "a", summary("a"), {"address": "PRIVATE", "items": ["PRIVATE"], "status": "delivery"}
     )
-    assert set(result.as_dict()) == {"order_id", "restaurant", "status", "eta"}
+    assert set(result.as_dict()) == {
+        "order_id",
+        "restaurant",
+        "status",
+        "eta",
+        "vehicle",
+        "eta_min",
+        "eta_max",
+    }
     assert "PRIVATE" not in str(result)
 
 
@@ -513,14 +521,16 @@ def test_selection_missing_eta_and_ties_is_shared():
 
     orders = {"z": order("z"), "a": order("a")}
     coordinator = SimpleNamespace(data=orders, entry=SimpleNamespace(entry_id="test"))
+    coordinator.selected = choose(orders)
     eta = WolttaajaSensor(coordinator, "next_delivery")
     status = WolttaajaSensor(coordinator, "order_status")
     assert eta.selected == status.selected == orders["a"]
     assert eta.native_value is None
     orders["z"] = order("z", 20)
+    coordinator.selected = choose(orders, coordinator.selected)
     assert eta.selected == status.selected == orders["z"]
     orders["a"] = Order("a", "Same", "pending", orders["z"].eta)
-    assert eta.selected == status.selected == orders["a"]
+    assert choose(orders) == "a"
 
 
 def test_unknown_status_is_not_an_enum_option():
@@ -529,7 +539,7 @@ def test_unknown_status_is_not_an_enum_option():
     from custom_components.wolttaaja.sensor import WolttaajaSensor
 
     orders = {"a": Order("a", "Same", "unknown", None)}
-    coordinator = SimpleNamespace(data=orders, entry=SimpleNamespace(entry_id="test"))
+    coordinator = SimpleNamespace(data=orders, entry=SimpleNamespace(entry_id="test"), selected="a")
     status = WolttaajaSensor(coordinator, "order_status")
     assert "unknown" not in status.options
     assert status.native_value is None
@@ -625,6 +635,9 @@ def private_details(status, **extra):
         "status_text": "Courier Secretname is on the way",
         "payment_method_id": "secret-payment-id",
         "items": {"secret-item-id": {"name": "Secret dish", "state": "ok"}},
+        "tip_config": {"min_amount": 50, "max_amount": 987654},
+        "payment_method": {"type": "secretpay"},
+        "delivery_location": {"coordinates": {"type": "Point", "coordinates": [24.9, 60.1]}},
         "_drivers": [
             {"delivering_your_order": True, "name": "Secretname", "location": [60.2, 24.8]}
         ],
@@ -665,8 +678,12 @@ async def test_diagnostics_timeline_is_private_and_outlives_the_order(hass):
     assert result["active_orders"] == []
     [timeline] = result["status_timelines"]
     assert timeline["label"] == "order 1"
-    events = timeline["events"]
-    assert [e["status"] for e in events] == ["ready_for_pickup", "ready_for_pickup"]
+    *events, left = timeline["events"]
+    # A listed courier means the order is out for delivery, as Wolt's app says.
+    assert [e["status"] for e in events] == ["on_the_way", "on_the_way"]
+    assert left["left"] == "DELIVERED" and "status" not in left
+    for secret in ("987654", "secretpay", "Point"):
+        assert secret not in text
     assert events[0]["signals"]["details.status"] == "ready"
     assert events[0]["signals"]["details.status_text"] == "<text 32>"
     assert events[0]["signals"]["drivers.delivering_your_order"] == [True]
@@ -680,6 +697,7 @@ async def test_diagnostics_timeline_is_private_and_outlives_the_order(hass):
     assert re.search(r"\d{4}-\d{2}-\d{2}", str(result["status_timelines"])) is None
     assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", events[0]["clock"])
     assert "details.items.<key>.state" in timeline["paths"]
+    assert "details.items.<key>.state" not in events[0]["signals"]
 
 
 async def test_unknown_status_is_logged_once(hass, caplog):
@@ -740,3 +758,80 @@ async def test_update_failure_says_what_failed(hass, error, step, expected):
     assert expected in str(exc.value)
     assert ("on order details" in str(exc.value)) == (step == "details")
     assert "purchase-secret" not in str(exc.value)
+
+
+def observed_details(status, *, drivers=0, **extra):
+    """Shape seen in real Wolt tracking details (values synthetic)."""
+    eta = dt_util.utcnow() + timedelta(minutes=30)
+    return {
+        "status": status,
+        "driver_type": "car",
+        "delivery_eta": {"$date": int(eta.timestamp() * 1000)},
+        "_drivers": [{"delivering_your_order": False}] * drivers,
+        **extra,
+    }
+
+
+@pytest.mark.parametrize(
+    "status,drivers,expected,vehicle",
+    [
+        ("acknowledged", 0, "pending", None),
+        ("production", 0, "preparing", None),
+        ("production", 1, "on_the_way", "bicycle"),
+        ("ready", 1, "on_the_way", "bicycle"),
+        ("ready", 0, "ready_for_pickup", None),
+    ],
+)
+def test_courier_assignment_means_out_for_delivery(status, drivers, expected, vehicle):
+    """Observed: a courier is listed already during production; car is the pre-assignment default."""
+    details = observed_details(status, drivers=drivers)
+    if drivers:
+        details["driver_type"] = "bicycle"
+    result = project("a", summary("a"), details)
+    assert (result.status, result.vehicle) == (expected, vehicle)
+
+
+def test_eta_range_is_kept_when_wolt_gives_one():
+    now = dt_util.utcnow()
+    details = observed_details(
+        "production",
+        delivery_eta_min={"$date": int((now + timedelta(minutes=25)).timestamp() * 1000)},
+        delivery_eta_max={"$date": int((now + timedelta(minutes=35)).timestamp() * 1000)},
+    )
+    result = project("a", summary("a"), details)
+    assert result.eta_min < result.eta < result.eta_max
+    assert project("a", summary("a"), observed_details("production")).eta_min is None
+
+
+def test_selection_does_not_flip_on_small_eta_changes():
+    now = dt_util.utcnow()
+
+    def orders(a, b):
+        return {
+            "a": Order("a", "A", "on_the_way", now + timedelta(minutes=a)),
+            "b": Order("b", "B", "preparing", now + timedelta(minutes=b)),
+        }
+
+    current = choose(orders(30.0, 31.0))
+    assert current == "a"
+    for a, b in ((31.0, 30.2), (31.2, 30.1), (30.7, 30.9)):  # Observed jitter.
+        current = choose(orders(a, b), current)
+        assert current == "a"
+    assert choose(orders(34.0, 30.0), current) == "b"
+    assert choose({"b": orders(0, 30)["b"]}, current) == "b"
+
+
+@pytest.mark.parametrize(
+    "vehicle,icon",
+    [("bicycle", "mdi:bicycle"), ("car", "mdi:car"), (None, "mdi:moped"), ("scooter", "mdi:moped")],
+)
+def test_icon_follows_vehicle(vehicle, icon):
+    from types import SimpleNamespace
+
+    from custom_components.wolttaaja.sensor import WolttaajaSensor
+
+    orders = {"a": Order("a", "A", "on_the_way", None, vehicle)}
+    coordinator = SimpleNamespace(data=orders, entry=SimpleNamespace(entry_id="t"), selected="a")
+    assert WolttaajaSensor(coordinator, "order_status").icon == icon
+    assert WolttaajaSensor(coordinator, "next_delivery").icon == icon
+    assert WolttaajaSensor(coordinator, "active_orders").icon == "mdi:food"

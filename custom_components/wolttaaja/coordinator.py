@@ -20,6 +20,7 @@ from .api import (
 )
 from .const import DEFAULTS, DELAYED_EVENT, DOMAIN, EVENT
 from .models import (
+    choose,
     delays,
     groups,
     lifecycle,
@@ -63,6 +64,7 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         self._saved = None
         self._ignored_lifecycles = set()
         self._unknown_statuses = set()
+        self.selected = None
         self.trace = StatusTrace()
         self.trace_store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.trace")
 
@@ -133,7 +135,8 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         options = self.options
         step = "order list"
         try:
-            active = self._active_summaries(await self.api.fetch_orders())
+            summaries = await self.api.fetch_orders()
+            active = self._active_summaries(summaries)
             step = "order details"
             details = await asyncio.gather(
                 *(self.api.fetch_order_details(oid) for oid in active), return_exceptions=True
@@ -158,10 +161,19 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Unable to update Wolt orders: {describe(err, step)}") from err
 
         now = dt_util.utcnow()
+        events = [
+            self.trace.record(oid, now, order, *sources[oid]) for oid, order in orders.items()
+        ]
+        lifecycles = {order_identity(s): lifecycle_value(s)[1] for s in summaries}
+        events += [
+            self.trace.finish(oid, now, lifecycles.get(oid))
+            for oid in self.order_sequence
+            if oid not in orders
+        ]
+        for event in filter(None, events):
+            _LOGGER.debug("Status trace %s", event)
+            self.trace_store.async_delay_save(self.trace.to_storage, 10)
         for oid, order in orders.items():
-            if event := self.trace.record(oid, now, order, *sources[oid]):
-                _LOGGER.debug("Status trace %s", event)
-                self.trace_store.async_delay_save(self.trace.to_storage, 10)
             if order.status == "unknown":
                 self._log_unknown_status(raw_status_label(*sources[oid]))
         # Keep first-seen order across ETA changes, API response reordering and restarts.
@@ -219,4 +231,5 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         self.update_interval = timedelta(
             seconds=options["active_interval"] if orders else options["idle_interval"]
         )
+        self.selected = choose(orders, self.selected)
         return orders

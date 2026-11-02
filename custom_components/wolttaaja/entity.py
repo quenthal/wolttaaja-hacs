@@ -9,7 +9,9 @@ from .const import DOMAIN
 
 class WolttaajaEntity(CoordinatorEntity):
     _attr_has_entity_name = True
-    _unrecorded_attributes = frozenset({"orders", "order_id", "restaurant", "status", "eta"})
+    _unrecorded_attributes = frozenset(
+        {"orders", "order_id", "restaurant", "status", "eta", "vehicle", "eta_min", "eta_max"}
+    )
 
     def __init__(self, coordinator, kind, platform):
         super().__init__(coordinator)

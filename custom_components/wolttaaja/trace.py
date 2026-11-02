@@ -21,8 +21,33 @@ from .models import _parse_eta, eta_candidates
 
 # Keys are matched by whole words ("details" must not match "eta").
 SIGNAL_WORDS = frozenset({"status", "state", "stage", "phase", "step", "type", "method", "mode"})
-TIME_WORDS = frozenset(
-    {"eta", "estimate", "estimated", "time", "at", "deadline", "window", "range", "min", "max"}
+TIME_WORDS = frozenset({"eta", "estimate", "estimated", "time", "at", "deadline", "window"})
+# No values are kept anywhere below these keys: money, payment, contents and place.
+PRIVATE_WORDS = frozenset(
+    {
+        "address",
+        "alias",
+        "amount",
+        "apartment",
+        "city",
+        "comment",
+        "coordinates",
+        "credits",
+        "currency",
+        "discount",
+        "discounts",
+        "email",
+        "item",
+        "items",
+        "location",
+        "name",
+        "payment",
+        "payments",
+        "phone",
+        "price",
+        "street",
+        "tip",
+    }
 )
 SAFE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,39}$")
 # Enum-like tokens only: free text could name the courier.
@@ -46,7 +71,7 @@ def _minutes(when: datetime | None, origin: datetime) -> float | None:
     return None if when is None else round((when - origin).total_seconds() / 60, 1)
 
 
-def _walk(value, path, depth, timed, origin, paths, signals) -> None:
+def _walk(value, path, depth, timed, origin, paths, signals, private=False) -> None:
     if depth > MAX_DEPTH or len(paths) >= MAX_PATHS:
         return
     if isinstance(value, dict):
@@ -55,7 +80,13 @@ def _walk(value, path, depth, timed, origin, paths, signals) -> None:
             child_path = f"{path}.{key}" if path else key
             paths.add(child_path)
             words = _words(key) if key != "<key>" else set()
-            named = bool(words) and "id" not in words and not key.lower().endswith("id")
+            child_private = private or bool(words & PRIVATE_WORDS)
+            named = (
+                bool(words)
+                and not child_private
+                and "id" not in words
+                and not key.lower().endswith("id")
+            )
             child_timed = timed or (named and bool(words & TIME_WORDS))
             when = None if isinstance(child, dict) else _parse_eta(child)
             if child_timed and when is not None:
@@ -66,10 +97,10 @@ def _walk(value, path, depth, timed, origin, paths, signals) -> None:
                     signals[child_path] = child
                 elif isinstance(child, str):
                     signals[child_path] = child if TOKEN.match(child) else f"<text {len(child)}>"
-            _walk(child, child_path, depth + 1, child_timed, origin, paths, signals)
+            _walk(child, child_path, depth + 1, child_timed, origin, paths, signals, child_private)
     elif isinstance(value, list) and value:
         # Lists are summarized by their first element only.
-        _walk(value[0], f"{path}[]", depth + 1, timed, origin, paths, signals)
+        _walk(value[0], f"{path}[]", depth + 1, timed, origin, paths, signals, private)
 
 
 def snapshot(summary, details, origin) -> tuple[dict, list[str]]:
@@ -127,12 +158,26 @@ class StatusTrace:
             "eta": None if eta is None else f"t{eta:+} min",
             "signals": signals,
         }
-        if last is not None and {k: last[k] for k in state} == state:
+        if last is not None and {k: last.get(k) for k in state} == state:
             return None
         event = {
             "at": f"t{_minutes(now, origin):+} min",
             "clock": dt_util.as_local(now).strftime("%H:%M:%S"),
             **state,
+        }
+        entry["events"].append(event)
+        del entry["events"][:-MAX_EVENTS]
+        return {"label": entry["label"], **event}
+
+    def finish(self, oid, now, lifecycle) -> dict[str, Any] | None:
+        """Close a timeline when the order leaves the active list."""
+        entry = self._orders.get(oid)
+        if entry is None or (entry["events"] and "left" in entry["events"][-1]):
+            return None
+        event = {
+            "at": f"t{_minutes(now, entry['origin']):+} min",
+            "clock": dt_util.as_local(now).strftime("%H:%M:%S"),
+            "left": lifecycle if isinstance(lifecycle, str) and TOKEN.match(lifecycle) else None,
         }
         entry["events"].append(event)
         del entry["events"][:-MAX_EVENTS]

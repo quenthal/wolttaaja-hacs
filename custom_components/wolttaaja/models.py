@@ -203,6 +203,9 @@ class Order:
     restaurant: str | None
     status: str
     eta: datetime | None
+    vehicle: str | None = None
+    eta_min: datetime | None = None
+    eta_max: datetime | None = None
 
     def as_dict(self):
         return {
@@ -210,6 +213,9 @@ class Order:
             "restaurant": self.restaurant,
             "status": self.status,
             "eta": self.eta.isoformat() if self.eta else None,
+            "vehicle": self.vehicle,
+            "eta_min": self.eta_min.isoformat() if self.eta_min else None,
+            "eta_max": self.eta_max.isoformat() if self.eta_max else None,
         }
 
 
@@ -243,19 +249,37 @@ def eta_candidates(summary, details):
 
 def project(order_id, summary, details):
     """Project only allowlisted fields and prefer assigned courier ETA."""
+    status = normalize_order_status(_status_source(summary, details))
+    # Observed: Wolt lists the courier as soon as one is assigned, often while the
+    # food is still being prepared, and its app then says the order is on its way.
+    courier = any(isinstance(d, dict) for d in details.get("_drivers") or [])
+    if courier and status in {"preparing", "ready_for_pickup"}:
+        status = "on_the_way"
+    # driver_type reads "car" before any courier is assigned; only trust it after.
+    vehicle = details.get("driver_type") if courier else None
     return Order(
         order_id,
         venue_name(summary)
         or venue_name(details)
         or venue_name({"venue": {"name": details.get("venue_name")}}),
-        normalize_order_status(_status_source(summary, details)),
+        status,
         next((eta for eta in eta_candidates(summary, details).values() if eta), None),
+        vehicle if isinstance(vehicle, str) and re.fullmatch(r"[a-z_]{1,20}", vehicle) else None,
+        _parse_eta(details.get("delivery_eta_min")),
+        _parse_eta(details.get("delivery_eta_max")),
     )
 
 
-def choose(orders):
-    """Select earliest known ETA; stable ID breaks ties and handles missing ETAs."""
-    return min(
+SWITCH_MARGIN = timedelta(minutes=3)
+
+
+def choose(orders, current=None):
+    """Select earliest known ETA; stable ID breaks ties and handles missing ETAs.
+
+    The current selection is kept unless another ETA is clearly earlier: two
+    orders a minute apart otherwise swap back and forth as estimates move.
+    """
+    best = min(
         orders,
         key=lambda key: (
             orders[key].eta is None,
@@ -264,6 +288,11 @@ def choose(orders):
         ),
         default=None,
     )
+    if current in orders and best is not None and current != best:
+        kept, earliest = orders[current].eta, orders[best].eta
+        if kept is not None and earliest is not None and kept - earliest < SWITCH_MARGIN:
+            return current
+    return best
 
 
 def groups(orders, notified, now, lead, window):

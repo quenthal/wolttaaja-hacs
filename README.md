@@ -53,13 +53,21 @@ On the device they are shown as **Delivery time**, **Status** and **Orders** (*T
 
 | Entity | State | Attributes |
 | --- | --- | --- |
-| `sensor.wolttaaja_next_delivery` | Earliest active ETA, timestamp | `order_id`, `restaurant`, `status`, `eta` |
-| `sensor.wolttaaja_order_status` | Status of the earliest-ETA order, or `no_order` | `order_id`, `restaurant`, `status`, `eta` |
-| `sensor.wolttaaja_active_orders` | Integer count | `orders`: list of the four fields above |
+| `sensor.wolttaaja_next_delivery` | Earliest active ETA, timestamp | `order_id`, `restaurant`, `status`, `eta`, `vehicle`, `eta_min`, `eta_max` |
+| `sensor.wolttaaja_order_status` | Status of the earliest-ETA order, or `no_order` | same as above |
+| `sensor.wolttaaja_active_orders` | Integer count | `orders`: list of the fields above |
+
+`vehicle` (`bicycle`, `car`) is set once Wolt lists a courier for the order; before that Wolt
+reports a default that says nothing. `eta_min` and `eta_max` are set when Wolt gives an ETA range
+(its app then shows e.g. "25–35 min"); the sensor state stays Wolt's single ETA. The icon of
+**Status** and **Delivery time** follows the vehicle (bicycle, car, otherwise a moped);
+**Orders** shows a food icon.
 
 `next_delivery` and `order_status` always select the same order from the same coordinator
 snapshot: the earliest known ETA. They switch together when ETA ordering changes, including
-all four order attributes. Equal ETAs use stable ID order. Missing ETAs sort last; if all are
+all order attributes, but only when another order's ETA is at least 3 minutes earlier: two orders
+with nearly equal ETAs would otherwise swap back and forth as Wolt's estimates move. Equal ETAs
+use stable ID order. Missing ETAs sort last; if all are
 missing, stable ID selects the order and its restaurant/status while the timestamp is unknown.
 With no orders, `order_status` is `no_order`, `next_delivery` is unknown (a timestamp sensor
 cannot hold text) and the count is zero. All sensors become unavailable when an API failure
@@ -78,6 +86,11 @@ error type, never response contents.
 
 Statuses normalize to `pending`, `preparing`, `ready_for_pickup`, `picked_up`, `on_the_way`,
 `arriving`, `delivered`, `cancelled`, `failed`, or `unknown`. Unknown text is never exposed raw.
+In observed Wolt data an order goes `pending` (venue has not confirmed) → `preparing` →
+`on_the_way` ("Out for delivery", "Toimitetaan"). `on_the_way` starts as soon as Wolt lists a
+courier, which often happens while the food is still being prepared; Wolt's own app says the order
+is on its way at that point too. Wolt reports no further step until delivery. `ready_for_pickup`
+appears only if the food is ready and no courier is listed yet.
 `order_status` is an enum sensor with these values plus `no_order`; an unrecognized status shows
 as HA's `unknown` state while the `status` attribute keeps `unknown`. Wolt's order-list telemetry determines which orders remain active.
 An order whose lifecycle cannot be read is ignored (logged once per value) unless it is already
