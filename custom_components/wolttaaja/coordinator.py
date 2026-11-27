@@ -202,6 +202,9 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             self.trace.record(oid, now, order, *sources[oid]) for oid, order in orders.items()
         ]
         lifecycles = {order_identity(s): lifecycle_value(s)[1] for s in summaries}
+        lifecycles.pop(None, None)
+        if self.trace.observe_list(now, lifecycles):
+            self.trace_store.async_delay_save(self.trace.to_storage, 10)
         events += [
             self.trace.finish(oid, now, lifecycles.get(oid))
             for oid in self.order_sequence

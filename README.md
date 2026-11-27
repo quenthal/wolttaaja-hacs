@@ -274,6 +274,11 @@ events per order). Each event has:
 
 Each timeline also lists the key layout of Wolt's payload, without values.
 
+After an order ends, its timeline also records how long Wolt keeps it in the order list
+(`listed_after_end`: final lifecycle, first and last poll seen, in minutes since first seen), and
+`order_list` shows how many orders the list held per lifecycle at the last poll. No order data
+from that list is kept, and orders Wolttaaja never followed are only counted.
+
 To get it: **Settings → Devices & services → Wolttaaja → ⋮ → Download diagnostics.** To follow an
 order live, use **Enable debug logging** on the same page: each new event is logged as
 `Status trace …`, and disabling debug logging downloads the log.
