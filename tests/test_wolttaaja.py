@@ -896,3 +896,38 @@ async def test_unobserved_endings_go_straight_to_no_order(hass):
     ]
     c.data = await c._async_update_data()
     assert c.recently_delivered is None
+
+
+async def test_trace_times_how_long_ended_orders_stay_listed(hass, freezer):
+    from custom_components.wolttaaja.diagnostics import async_get_config_entry_diagnostics
+
+    api = api_for(["a"])
+    old = {"purchase_id": "older", "telemetry": {"order_status_type": "DELIVERED"}}
+    api.fetch_orders.return_value = [summary("a"), old]
+    entry = MockConfigEntry(domain="wolttaaja", data=DATA, minor_version=2)
+    entry.add_to_hass(hass)
+    with patch("custom_components.wolttaaja.WoltApi", return_value=api):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        c = entry.runtime_data
+        delivered = {"purchase_id": "a", "telemetry": {"order_status_type": "DELIVERED"}}
+        for _ in range(3):  # Still listed as DELIVERED at +5, +10 and +15 min.
+            freezer.tick(timedelta(minutes=5))
+            api.fetch_orders.return_value = [delivered, old]
+            await c.async_refresh()
+        freezer.tick(timedelta(minutes=5))
+        api.fetch_orders.return_value = [old]
+        await c.async_refresh()
+        result = await async_get_config_entry_diagnostics(hass, entry)
+        await hass.config_entries.async_unload(entry.entry_id)
+
+    assert result["order_list"]["counts"] == {"DELIVERED": 1}
+    assert result["order_list"]["total"] == 1
+    [timeline] = result["status_timelines"]
+    listed = timeline["listed_after_end"]
+    assert (listed["lifecycle"], listed["from"], listed["until"]) == (
+        "DELIVERED",
+        "t+5.0 min",
+        "t+15.0 min",
+    )
+    assert "older" not in str(result)

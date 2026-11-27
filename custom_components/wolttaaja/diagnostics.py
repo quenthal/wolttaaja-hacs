@@ -16,6 +16,8 @@ async def async_get_config_entry_diagnostics(hass, entry):
             {"status": order.status, "has_eta": order.eta is not None}
             for order in (coordinator.data or {}).values()
         ],
+        # Wolt's order list at the last poll: counts per lifecycle, no order data.
+        "order_list": coordinator.trace.order_list,
         # Recent orders, including ones that already completed.
         "status_timelines": coordinator.trace.as_dict(),
     }

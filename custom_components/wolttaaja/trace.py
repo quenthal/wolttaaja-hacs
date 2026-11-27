@@ -11,7 +11,7 @@ Order IDs, names, addresses, items and coordinates never enter a trace.
 from __future__ import annotations
 
 import re
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import Any
 
@@ -122,17 +122,20 @@ class StatusTrace:
     def __init__(self) -> None:
         self._orders: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._labels = 0
+        self.order_list: dict[str, Any] = {}
 
     def load(self, data) -> None:
         if not isinstance(data, dict):
             return
         self._labels = data.get("labels", 0)
+        self.order_list = data.get("order_list", {})
         for oid, entry in data.get("orders", {}).items():
             self._orders[oid] = {**entry, "origin": datetime.fromisoformat(entry["origin"])}
 
     def to_storage(self) -> dict[str, Any]:
         return {
             "labels": self._labels,
+            "order_list": self.order_list,
             "orders": {
                 oid: {**entry, "origin": entry["origin"].isoformat()}
                 for oid, entry in self._orders.items()
@@ -182,6 +185,31 @@ class StatusTrace:
         entry["events"].append(event)
         del entry["events"][:-MAX_EVENTS]
         return {"label": entry["label"], **event}
+
+    def observe_list(self, now, lifecycles) -> bool:
+        """Count Wolt's order list by lifecycle; time how long ended orders stay listed.
+
+        ``lifecycles`` maps listed order IDs to their raw lifecycle value. Only
+        counts and minutes are kept, and only for orders this trace followed.
+        """
+
+        def label(value):
+            value = str(value)
+            return value if TOKEN.match(value) else "<other>"
+
+        clock = dt_util.as_local(now).strftime("%H:%M:%S")
+        counts = dict(sorted(Counter(label(v) for v in lifecycles.values()).items()))
+        changed = counts != self.order_list.get("counts")
+        self.order_list = {"clock": clock, "total": len(lifecycles), "counts": counts}
+        for oid, entry in self._orders.items():
+            value = lifecycles.get(oid)
+            if oid not in lifecycles or label(value).upper() == "IN_PROGRESS":
+                continue
+            at = f"t{_minutes(now, entry['origin']):+} min"
+            listed = entry.setdefault("listed_after_end", {"lifecycle": label(value), "from": at})
+            listed.update(lifecycle=label(value), until=at, until_clock=clock)
+            changed = True
+        return changed
 
     def as_dict(self) -> list[dict[str, Any]]:
         """Times are minutes since the order was first seen (t+0.0 min)."""
