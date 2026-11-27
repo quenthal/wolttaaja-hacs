@@ -255,6 +255,10 @@ def project(order_id, summary, details):
     courier = any(isinstance(d, dict) for d in details.get("_drivers") or [])
     if courier and status in {"preparing", "ready_for_pickup"}:
         status = "on_the_way"
+    # Observed: when the venue delivers itself (e.g. Kotipizza) Wolt lists no
+    # courier, adds self_delivery, and keeps "ready" until delivery.
+    if status == "ready_for_pickup" and isinstance(details.get("self_delivery"), dict):
+        status = "on_the_way"
     # driver_type reads "car" before any courier is assigned; only trust it after.
     vehicle = details.get("driver_type") if courier else None
     return Order(

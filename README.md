@@ -89,8 +89,16 @@ Statuses normalize to `pending`, `preparing`, `ready_for_pickup`, `picked_up`, `
 In observed Wolt data an order goes `pending` (venue has not confirmed) → `preparing` →
 `on_the_way` ("Out for delivery", "Toimitetaan"). `on_the_way` starts as soon as Wolt lists a
 courier, which often happens while the food is still being prepared; Wolt's own app says the order
-is on its way at that point too. Wolt reports no further step until delivery. `ready_for_pickup`
-appears only if the food is ready and no courier is listed yet.
+is on its way at that point too. When the venue delivers itself (Wolt then lists no courier and
+marks the order `self_delivery`), `on_the_way` starts when the food is ready. Wolt reports no
+further step until delivery. `ready_for_pickup` appears only if the food is ready, no courier is
+listed and the venue does not deliver itself.
+
+When Wolt marks the last order `DELIVERED`, `order_status` shows `delivered` ("Delivered",
+"Toimitettu") for ten minutes, then `no_order`. `active_orders` drops to `0` and `next_delivery`
+clears immediately. Other endings (cancelled, or an order simply leaving Wolt's list) go straight
+to `no_order`: only `DELIVERED` has been seen in real data so far. After a restart, Status starts
+from `no_order`.
 `order_status` is an enum sensor with these values plus `no_order`; an unrecognized status shows
 as HA's `unknown` state while the `status` attribute keeps `unknown`. Wolt's order-list telemetry determines which orders remain active.
 An order whose lifecycle cannot be read is ignored (logged once per value) unless it is already

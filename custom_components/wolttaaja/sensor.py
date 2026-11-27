@@ -33,17 +33,25 @@ class WolttaajaSensor(WolttaajaEntity, SensorEntity):
         return (self.coordinator.data or {}).get(self.coordinator.selected)
 
     @property
+    def shown(self):
+        """The order this sensor describes; Status also lingers on a just-delivered one."""
+        order = self.selected
+        if order is None and self.kind == "order_status":
+            order = self.coordinator.recently_delivered
+        return order
+
+    @property
     def icon(self):
         if self.kind == "active_orders":
             return "mdi:food"
-        order = self.selected
+        order = self.shown
         return VEHICLE_ICONS.get(order.vehicle if order else None, "mdi:moped")
 
     @property
     def native_value(self):
         if self.kind == "active_orders":
             return len(self.coordinator.data or {})
-        order = self.selected
+        order = self.shown
         if self.kind == "next_delivery":
             return order.eta if order else None
         if not order:
@@ -57,8 +65,8 @@ class WolttaajaSensor(WolttaajaEntity, SensorEntity):
         if self.kind == "active_orders":
             return {"orders": [order.as_dict() for order in (self.coordinator.data or {}).values()]}
         return (
-            self.selected.as_dict()
-            if self.selected
+            self.shown.as_dict()
+            if self.shown
             else dict.fromkeys(
                 ("order_id", "restaurant", "status", "eta", "vehicle", "eta_min", "eta_max")
             )

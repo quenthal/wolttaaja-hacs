@@ -429,9 +429,12 @@ async def test_three_order_selection_list_order_restart_and_completion(hass):
         ]
         await entry.runtime_data.async_refresh()
         check("z", ["z", "b"])
+        assert entry.runtime_data.recently_delivered.order_id == "a"
         api.fetch_orders.return_value = [summary("b")]
         await entry.runtime_data.async_refresh()
         check("b", ["b"])
+        # z vanished without a final state, so "a" delivered earlier is no longer shown.
+        assert entry.runtime_data.recently_delivered is None
         api.fetch_orders.return_value = [
             {"purchase_id": "b", "telemetry": {"order_status_type": "CANCELLED"}}
         ]
@@ -520,7 +523,9 @@ def test_selection_missing_eta_and_ties_is_shared():
     from custom_components.wolttaaja.sensor import WolttaajaSensor
 
     orders = {"z": order("z"), "a": order("a")}
-    coordinator = SimpleNamespace(data=orders, entry=SimpleNamespace(entry_id="test"))
+    coordinator = SimpleNamespace(
+        data=orders, entry=SimpleNamespace(entry_id="test"), recently_delivered=None
+    )
     coordinator.selected = choose(orders)
     eta = WolttaajaSensor(coordinator, "next_delivery")
     status = WolttaajaSensor(coordinator, "order_status")
@@ -539,7 +544,9 @@ def test_unknown_status_is_not_an_enum_option():
     from custom_components.wolttaaja.sensor import WolttaajaSensor
 
     orders = {"a": Order("a", "Same", "unknown", None)}
-    coordinator = SimpleNamespace(data=orders, entry=SimpleNamespace(entry_id="test"), selected="a")
+    coordinator = SimpleNamespace(
+        data=orders, entry=SimpleNamespace(entry_id="test"), selected="a", recently_delivered=None
+    )
     status = WolttaajaSensor(coordinator, "order_status")
     assert "unknown" not in status.options
     assert status.native_value is None
@@ -831,7 +838,61 @@ def test_icon_follows_vehicle(vehicle, icon):
     from custom_components.wolttaaja.sensor import WolttaajaSensor
 
     orders = {"a": Order("a", "A", "on_the_way", None, vehicle)}
-    coordinator = SimpleNamespace(data=orders, entry=SimpleNamespace(entry_id="t"), selected="a")
+    coordinator = SimpleNamespace(
+        data=orders, entry=SimpleNamespace(entry_id="t"), selected="a", recently_delivered=None
+    )
     assert WolttaajaSensor(coordinator, "order_status").icon == icon
     assert WolttaajaSensor(coordinator, "next_delivery").icon == icon
     assert WolttaajaSensor(coordinator, "active_orders").icon == "mdi:food"
+
+
+def test_venue_self_delivery_is_out_for_delivery_when_ready():
+    """Observed (Kotipizza): no courier listed, self_delivery present, ready until delivered."""
+    venue = {"self_delivery": {"is_tracking_enabled": False}}
+    assert project("a", summary("a"), observed_details("ready", **venue)).status == "on_the_way"
+    assert project("a", summary("a"), observed_details("production", **venue)).status == "preparing"
+
+
+async def test_status_shows_delivered_for_ten_minutes(hass, freezer):
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+    api = api_for(["a"])
+    api.fetch_order_details.return_value = observed_details("ready", drivers=1)
+    entry = MockConfigEntry(domain="wolttaaja", data=DATA, minor_version=2)
+    entry.add_to_hass(hass)
+    with patch("custom_components.wolttaaja.WoltApi", return_value=api):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert hass.states.get("sensor.wolttaaja_order_status").state == "on_the_way"
+        api.fetch_orders.return_value = [
+            {"purchase_id": "a", "telemetry": {"order_status_type": "DELIVERED"}}
+        ]
+        await entry.runtime_data.async_refresh()
+        await hass.async_block_till_done()
+        status = hass.states.get("sensor.wolttaaja_order_status")
+        assert status.state == "delivered"
+        assert status.attributes["restaurant"] == "Same restaurant"
+        assert hass.states.get("sensor.wolttaaja_active_orders").state == "0"
+        assert hass.states.get("sensor.wolttaaja_next_delivery").state == "unknown"
+
+        freezer.tick(timedelta(minutes=9))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        assert hass.states.get("sensor.wolttaaja_order_status").state == "delivered"
+        freezer.tick(timedelta(minutes=2))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        assert hass.states.get("sensor.wolttaaja_order_status").state == "no_order"
+        await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_unobserved_endings_go_straight_to_no_order(hass):
+    """Only DELIVERED has been seen in real data; cancellation must not show delivered."""
+    api = api_for(["a"])
+    c = await coordinator(hass, api)
+    c.data = await c._async_update_data()
+    api.fetch_orders.return_value = [
+        {"purchase_id": "a", "telemetry": {"order_status_type": "CANCELLED"}}
+    ]
+    c.data = await c._async_update_data()
+    assert c.recently_delivered is None
