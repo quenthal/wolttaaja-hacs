@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import timedelta
 from time import monotonic
 
+from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -33,6 +36,8 @@ from .trace import StatusTrace
 
 _LOGGER = logging.getLogger(__name__)
 RETENTION = 30 * 86400
+# How long Status shows "delivered" after Wolt marks the last order DELIVERED.
+DELIVERED_SHOWN = timedelta(minutes=10)
 
 
 def describe(err, step):
@@ -65,6 +70,8 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         self._ignored_lifecycles = set()
         self._unknown_statuses = set()
         self.selected = None
+        self._delivered = None
+        self._delivered_unsub = None
         self.trace = StatusTrace()
         self.trace_store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.trace")
 
@@ -74,6 +81,36 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
         if options != self.options:
             self.options = options
             await self.async_request_refresh()
+
+    @property
+    def recently_delivered(self):
+        """The order Wolt marked DELIVERED within the last ten minutes, if any."""
+        if self._delivered and dt_util.utcnow() - self._delivered[1] < DELIVERED_SHOWN:
+            return self._delivered[0]
+        return None
+
+    @callback
+    def _delivered_expired(self, _now):
+        self._delivered_unsub = None
+        self.async_update_listeners()
+
+    def _remember_delivered(self, order, now):
+        self._delivered = (replace(order, status="delivered"), now)
+        if self._delivered_unsub:
+            self._delivered_unsub()
+        self._delivered_unsub = async_call_later(
+            self.hass, DELIVERED_SHOWN.total_seconds(), self._delivered_expired
+        )
+
+    def _forget_delivered(self):
+        self._delivered = None
+        if self._delivered_unsub:
+            self._delivered_unsub()
+            self._delivered_unsub = None
+
+    async def async_shutdown(self):
+        self._forget_delivered()
+        await super().async_shutdown()
 
     async def async_load(self):
         self.trace.load(await self.trace_store.async_load())
@@ -170,6 +207,16 @@ class WolttaajaCoordinator(DataUpdateCoordinator):
             for oid in self.order_sequence
             if oid not in orders
         ]
+        previous = self.data or {}
+        for oid, order in previous.items():
+            if oid in orders:
+                continue
+            # Observed: every finished order left the list as DELIVERED. Any other
+            # ending (cancelled, vanished) must not leave an earlier "delivered" up.
+            if str(lifecycles.get(oid)).upper() == "DELIVERED":
+                self._remember_delivered(order, now)
+            else:
+                self._forget_delivered()
         for event in filter(None, events):
             _LOGGER.debug("Status trace %s", event)
             self.trace_store.async_delay_save(self.trace.to_storage, 10)
